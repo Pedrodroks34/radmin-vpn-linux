@@ -31,7 +31,7 @@ if command -v docker >/dev/null 2>&1; then
   echo "building Arch package with docker ($image)"
   docker run --rm \
     -e STAGE_ROOT=/src \
-    -e PACKAGER="radmin-vpn-linux CI" \
+    -e PACKAGER="Pedrodroks34 <droks5804@gmail.com>" \
     -v "$ROOT:/src:Z" \
     -v "$PREP:/work:Z" \
     -w /work/pkg/arch \
@@ -45,7 +45,7 @@ if command -v docker >/dev/null 2>&1; then
       su builder -s /bin/bash -c "STAGE_ROOT=/src PACKAGER=\"$PACKAGER\" makepkg -f --noconfirm --skipinteg --nodeps"
     '
   cp "$PREP"/pkg/arch/*.pkg.tar.zst "$OUT"/
-  docker run --rm -v "$PREP:/work:Z" "$image" rm -rf /work
+  docker run --rm -v "$PREP:/work:Z" "$image" sh -c 'rm -rf /work/* /work/.[!.]*'
 else
   if ! command -v makepkg >/dev/null 2>&1; then
     echo "error: docker or makepkg required to build the .pkg.tar.zst" >&2
