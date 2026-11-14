@@ -10,7 +10,7 @@ Use the systemd user service:
 systemctl --user enable --now radmin-vpn.service
 ```
 
-> First-time setup requires the proprietary Radmin VPN installed into the Wine prefix — see [installation.md](installation.md#install-radmin-vpn-into-the-wine-prefix-first-time-setup). The service tells you exactly what is missing if it isn't.
+> First-time setup requires the proprietary Radmin VPN installed into the Wine prefix — run `radmin-vpn setup` (it downloads and installs it for you); see [installation.md](installation.md#set-up-the-wine-prefix-first-time-setup).
 
 The service starts the TAP adapter, bridge, firewall/routes, and Wine/Radmin processes according to its configuration. Interaction with the Radmin GUI is optional; when `--no-ui` is set, no desktop session is required. When a graphical session exists, the service injects its `DISPLAY`/`XAUTHORITY` into Wine processes so the desktop and the GUI work normally; see [installation.md](installation.md#graphical-session-and-the-radmin-gui).
 

@@ -184,24 +184,106 @@ fn cmd_setup(
 
     check_prerequisites()?;
 
-    if !config.wineprefix.exists() {
-        info!("Creating Wine prefix...");
+    // 1. Initialize the Wine prefix if missing. Creating an empty directory is
+    // not enough: drive_c, windows/ and the registry hives only appear after
+    // `wineboot --init` runs.
+    if !config.wineprefix.join("drive_c").is_dir() {
+        info!(
+            "Initializing Wine prefix at {} (wineboot --init)...",
+            config.wineprefix.display()
+        );
         std::fs::create_dir_all(&config.wineprefix)
             .map_err(|e| RvpnError::Config(format!("create wineprefix: {e}")))?;
-    }
-
-    let radmin_dir = config.radmin_dir();
-    if !radmin_dir.join("RvControlSvc.exe").exists() {
-        if let Some(installer) = &config.installer {
-            info!("Installing Radmin VPN from {}", installer.display());
-        } else {
+        let status = std::process::Command::new("wineboot")
+            .env("WINEPREFIX", &config.wineprefix)
+            .arg("--init")
+            .status()
+            .map_err(|e| RvpnError::Config(format!("failed to run wineboot: {e}")))?;
+        if !status.success() {
+            return Err(RvpnError::Config(format!(
+                "wineboot --init exited with {status}"
+            )));
+        }
+        if !config.wineprefix.join("drive_c").is_dir() {
             return Err(RvpnError::Config(
-                "Radmin VPN not installed and no installer provided. Use --installer".to_string(),
+                "wineboot completed but drive_c was not created in the prefix".to_string(),
             ));
         }
     }
 
+    // 2. Install Radmin VPN into the prefix if missing. The installer is an
+    // Inno Setup 6.x package served from download.radmin-vpn.com; silent
+    // flags are /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-.
+    let radmin_exe = config.radmin_dir().join("RvControlSvc.exe");
+    if !radmin_exe.exists() {
+        let installer_path = match &config.installer {
+            Some(path) => {
+                info!("Installing Radmin VPN from {}", path.display());
+                // Best-effort verification: a user-provided installer with a
+                // different hash/name is allowed to proceed (it may simply
+                // be a newer build), unlike the pinned download path.
+                let mut verify_cfg = config.clone();
+                if verify_cfg.radmin_sha256.is_none() {
+                    verify_cfg.radmin_sha256 = default_pin_for(&config.radmin_version);
+                }
+                let _ =
+                    crate::installer::InstallerManager::new(&verify_cfg).verify_installer(path)?;
+                path.clone()
+            }
+            None => {
+                let mut download_cfg = config.clone();
+                if download_cfg.radmin_sha256.is_none() {
+                    download_cfg.radmin_sha256 = default_pin_for(&config.radmin_version);
+                }
+                let path =
+                    crate::installer::InstallerManager::new(&download_cfg).download_installer()?;
+                info!("Using installer {}", path.display());
+                path
+            }
+        };
+
+        install_radmin_installer(&config, &installer_path)?;
+
+        if !radmin_exe.exists() {
+            return Err(RvpnError::Config(format!(
+                "Radmin VPN installer ran but {} was not created — \
+                 the installation did not complete",
+                radmin_exe.display()
+            )));
+        }
+    }
+
     info!("Setup complete");
+    info!("Enable the service with: systemctl --user enable --now radmin-vpn.service");
+    Ok(())
+}
+
+/// The pinned SHA256 only matches the default Radmin build; newer/custom
+/// versions are installed unverified by design (a wrong hash would block
+/// legitimate upgrades).
+fn default_pin_for(version: &str) -> Option<String> {
+    if version == crate::core::constants::DEFAULT_RADMIN_VERSION {
+        Some(crate::core::constants::RADMIN_SHA256_PINNED.to_string())
+    } else {
+        None
+    }
+}
+
+fn install_radmin_installer(config: &Config, installer: &std::path::Path) -> Result<(), RvpnError> {
+    let status = std::process::Command::new("wine")
+        .env("WINEPREFIX", &config.wineprefix)
+        .arg(installer)
+        .arg("/VERYSILENT")
+        .arg("/NORESTART")
+        .arg("/SUPPRESSMSGBOXES")
+        .arg("/SP-")
+        .status()
+        .map_err(|e| RvpnError::Config(format!("failed to run the Radmin installer: {e}")))?;
+    if !status.success() {
+        return Err(RvpnError::Config(format!(
+            "Radmin VPN installer exited with {status}"
+        )));
+    }
     Ok(())
 }
 

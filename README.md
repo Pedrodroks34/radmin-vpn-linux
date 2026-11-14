@@ -29,7 +29,7 @@ This produces the `radmin-vpn` binary and, when built, the Wine-scoped LD_PRELOA
 ```bash
 cargo build --release --workspace
 sudo make install
-systemctl --user daemon-reload
+radmin-vpn setup                    # creates the Wine prefix and installs Radmin VPN
 systemctl --user enable --now radmin-vpn.service
 ```
 

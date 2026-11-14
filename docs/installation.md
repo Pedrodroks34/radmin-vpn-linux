@@ -63,20 +63,24 @@ sudo dnf install -y rustup mingw64-gcc
 rustup target add x86_64-pc-windows-gnu
 ```
 
-## Install Radmin VPN into the Wine prefix (first-time setup)
+## Set up the Wine prefix (first-time setup)
 
-The Radmin VPN Windows binaries are proprietary — they are **not** (and cannot be) distributed with this project. The service only installs the open-source shims; for the VPN itself you must install Famatech's official installer into the same Wine prefix the service uses. Do this once per machine/prefix:
+The Radmin VPN Windows binaries are proprietary — they are **not** (and cannot be) distributed with this project. `radmin-vpn setup` handles the whole first-time flow: it creates and initializes the Wine prefix (`wineboot --init`), downloads the official Radmin VPN installer from Famatech (SHA256-verified against a pin for the default build), installs it silently (Inno Setup), and leaves the prefix ready for the service:
 
 ```sh
-# download Radmin VPN from https://www.radmin-vpn.com/download/
-WINEPREFIX="$HOME/.local/share/radmin-vpn-linux/wineprefix" wine RadminVPN_2.1.4952.2_*.msi
+radmin-vpn setup                     # downloads + installs Radmin VPN 2.1.4951.1
+radmin-vpn setup --installer <file>  # offline / custom build: install from a local installer
+systemctl --user enable --now radmin-vpn.service
 ```
 
-If the service is already running and the prefix doesn't contain `C:\Program Files (x86)\Radmin VPN\RvControlSvc.exe` yet, the service exits with an error naming exactly what is missing. After installing the MSI, (re)start the service:
+With `--installer`, a local `Radmin_VPN_<version>.exe` is installed instead of downloading. A user-provided installer whose hash doesn't match the pinned default is allowed (it may simply be a newer build); the pin verification is enforced only for the default auto-download. If you prefer doing it by hand, download Radmin VPN from https://www.radmin-vpn.com/download/ and run it yourself:
 
 ```sh
+WINEPREFIX="$HOME/.local/share/radmin-vpn-linux/wineprefix" wine Radmin_VPN_2.1.4951.1.exe
 systemctl --user restart radmin-vpn.service
 ```
+
+If the service is already running and the prefix doesn't contain `C:\Program Files (x86)\Radmin VPN\RvControlSvc.exe` yet, the service exits with an error naming exactly what is missing.
 
 ## Build
 
