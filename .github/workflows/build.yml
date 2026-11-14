@@ -47,6 +47,7 @@ jobs:
             packaging/tmpfiles.d/radmin-vpn.conf
 
   packages:
+    needs: rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
