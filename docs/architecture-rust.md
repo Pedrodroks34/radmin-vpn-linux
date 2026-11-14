@@ -21,7 +21,7 @@ The original C/Python/shell sources were removed after the rewrite. This table m
 
 ## Runtime data flow
 
-1. `radmin-vpn service` acquires the exclusive lock in `/run/radmin-vpn/service.lock`.
+1. `radmin-vpn service` acquires the exclusive lock in `$XDG_RUNTIME_DIR/radmin-vpn/service.lock` (fallback `/run/radmin-vpn/service.lock`).
 2. TAP interface is created or adopted through `/dev/net/tun` using `TUNSETIFF`/`TUNSETPERSIST` when the service created it, and is configured before use.
 3. FIFOs are created/reused: `/tmp/rvpn_b2d`, `/tmp/rvpn_d2b_high`, `/tmp/rvpn_d2b_low`.
 4. Bridge relays frames: TAP -> `b2d`, `d2b_high`/`d2b_low` -> TAP (high-priority drained first, low-pipe starvation guard).

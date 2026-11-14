@@ -1,5 +1,6 @@
 use crate::core::constants::*;
 use crate::core::types::RvpnError;
+use crate::network::netlink;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -24,30 +25,15 @@ impl RouteManager {
     }
 
     pub fn add_route(&mut self, destination: &str, metric: Option<u32>) -> Result<(), RvpnError> {
-        let mut cmd = std::process::Command::new("ip");
-        cmd.args(["route", "replace", destination, "dev", &self.device]);
-        if let Some(m) = metric {
-            cmd.args(["metric", &m.to_string()]);
-        }
+        netlink::route_add_v4(destination, &self.device, metric)?;
 
-        let status = cmd
-            .status()
-            .map_err(|e| RvpnError::Route(format!("ip route replace failed: {e}")))?;
-
-        if status.success() {
-            let route = ManagedRoute {
-                destination: destination.to_string(),
-                device: self.device.clone(),
-                metric,
-            };
-            self.routes.insert(route);
-            Ok(())
-        } else {
-            Err(RvpnError::Route(format!(
-                "ip route replace {destination} dev {} failed",
-                self.device
-            )))
-        }
+        let route = ManagedRoute {
+            destination: destination.to_string(),
+            device: self.device.clone(),
+            metric,
+        };
+        self.routes.insert(route);
+        Ok(())
     }
 
     pub fn append_route(
@@ -55,45 +41,25 @@ impl RouteManager {
         destination: &str,
         metric: Option<u32>,
     ) -> Result<(), RvpnError> {
-        let mut cmd = std::process::Command::new("ip");
-        cmd.args(["route", "append", destination, "dev", &self.device]);
-        if let Some(m) = metric {
-            cmd.args(["metric", &m.to_string()]);
-        }
-
-        let status = cmd
-            .status()
-            .map_err(|e| RvpnError::Route(format!("ip route append failed: {e}")))?;
-
-        if status.success() {
+        // Best-effort: the broadcast routes are not required for the VPN to
+        // work (peer unicast still flows), so a pre-existing or rejected
+        // broadcast route must not abort startup.
+        if netlink::route_add_v4(destination, &self.device, metric).is_ok() {
             let route = ManagedRoute {
                 destination: destination.to_string(),
                 device: self.device.clone(),
                 metric,
             };
             self.routes.insert(route);
-            Ok(())
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     pub fn remove_route(&mut self, destination: &str) -> Result<(), RvpnError> {
-        let status = std::process::Command::new("ip")
-            .args(["route", "del", destination, "dev", &self.device])
-            .status()
-            .map_err(|e| RvpnError::Route(format!("ip route del failed: {e}")))?;
+        netlink::route_del_v4(destination, &self.device)?;
 
         self.routes.retain(|r| r.destination != destination);
-
-        if status.success() {
-            Ok(())
-        } else {
-            Err(RvpnError::Route(format!(
-                "ip route del {destination} dev {} failed",
-                self.device
-            )))
-        }
+        Ok(())
     }
 
     pub fn setup_vpn_routes(&mut self, broadcast: bool) -> Result<(), RvpnError> {

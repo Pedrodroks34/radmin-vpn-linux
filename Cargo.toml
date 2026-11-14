@@ -22,6 +22,8 @@ reuseport = []
 [dependencies]
 # Core
 serde = { version = "1", features = ["derive"] }
+rtnetlink = "0.7"
+futures = "0.3"
 serde_json = "1"
 toml = "0.8"
 thiserror = "1"

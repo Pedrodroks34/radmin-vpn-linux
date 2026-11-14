@@ -7,7 +7,7 @@ SRC_ROOT="${STAGE_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
 install -Dm755 "$SRC_ROOT/target/release/radmin-vpn" "$DEST/usr/bin/radmin-vpn"
 
 install -Dm0644 "$SRC_ROOT/packaging/systemd/radmin-vpn.service" \
-  "$DEST/usr/lib/systemd/system/radmin-vpn.service"
+  "$DEST/usr/lib/systemd/user/radmin-vpn.service"
 
 install -d -m 0755 "$DEST/usr/lib/radmin-vpn"
 for f in rvpnnetmp.sys adapter_hook.dll rvpn_launcher.exe netsh.exe netsh64.exe drvinst.exe; do

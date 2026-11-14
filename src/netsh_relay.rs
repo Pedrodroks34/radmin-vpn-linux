@@ -1,7 +1,6 @@
 use crate::core::constants::NETSH_CMD_FILE;
 use crate::core::types::RvpnError;
 use std::io::{Read, Seek, SeekFrom};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -96,18 +95,18 @@ fn execute_command(line: &str, tap_dev: &str) -> Result<(), RvpnError> {
 
         match args.as_slice() {
             ["ip", "addr", "add", addr_cidr, "dev", dev] if *dev == tap_dev => {
-                let (ip, cidr) = parse_cidr(addr_cidr)?;
-                run_ip(&["addr", "add", &format!("{ip}/{cidr}"), "dev", dev])?;
+                let (ip, prefix) = crate::network::netlink::parse_ipv4_cidr(addr_cidr)?;
+                crate::network::netlink::addr_add(dev, std::net::IpAddr::V4(ip), prefix)?;
             }
             ["ip", "-6", "addr", "add", addr_cidr, "dev", dev] if *dev == tap_dev => {
-                let (ip, cidr) = parse_ipv6_cidr(addr_cidr)?;
-                run_ip(&["-6", "addr", "add", &format!("{ip}/{cidr}"), "dev", dev])?;
+                let (ip, prefix) = crate::network::netlink::parse_ipv6_cidr(addr_cidr)?;
+                crate::network::netlink::addr_add(dev, std::net::IpAddr::V6(ip), prefix)?;
             }
             ["ip", "link", "set", dev, "up"] if *dev == tap_dev => {
-                run_ip(&["link", "set", dev, "up"])?;
+                crate::network::netlink::link_set_up(dev)?;
             }
             ["ip", "addr", "flush", "dev", dev] if *dev == tap_dev => {
-                run_ip(&["addr", "flush", "dev", dev])?;
+                crate::network::netlink::addr_flush(dev)?;
             }
             _ => {
                 return Err(RvpnError::Service(format!("unsupported command: {part}")));
@@ -119,85 +118,4 @@ fn execute_command(line: &str, tap_dev: &str) -> Result<(), RvpnError> {
 
 fn shell_words(s: &str) -> Vec<&str> {
     s.split_whitespace().collect()
-}
-
-fn parse_cidr(s: &str) -> Result<(String, u8), RvpnError> {
-    let (ip, cidr) = s
-        .split_once('/')
-        .ok_or_else(|| RvpnError::Service(format!("invalid CIDR: {s}")))?;
-    if !valid_ipv4(ip) {
-        return Err(RvpnError::Service(format!("invalid IPv4: {ip}")));
-    }
-    let cidr: u8 = cidr
-        .parse()
-        .map_err(|_| RvpnError::Service(format!("invalid prefix length: {s}")))?;
-    if cidr > 32 {
-        return Err(RvpnError::Service(format!(
-            "prefix length out of range: {cidr}"
-        )));
-    }
-    Ok((ip.to_string(), cidr))
-}
-
-fn parse_ipv6_cidr(s: &str) -> Result<(String, u8), RvpnError> {
-    let (ip, cidr) = s
-        .split_once('/')
-        .ok_or_else(|| RvpnError::Service(format!("invalid IPv6 CIDR: {s}")))?;
-    if !valid_ipv6(ip) {
-        return Err(RvpnError::Service(format!("invalid IPv6: {ip}")));
-    }
-    let cidr: u8 = cidr
-        .parse()
-        .map_err(|_| RvpnError::Service(format!("invalid prefix length: {s}")))?;
-    if cidr > 128 {
-        return Err(RvpnError::Service(format!(
-            "prefix length out of range: {cidr}"
-        )));
-    }
-    Ok((ip.to_string(), cidr))
-}
-
-fn valid_ipv4(s: &str) -> bool {
-    let mut count = 0;
-    for part in s.split('.') {
-        if part.is_empty() || part.len() > 3 {
-            return false;
-        }
-        if !part.chars().all(|c| c.is_ascii_digit()) {
-            return false;
-        }
-        let octet: u16 = match part.parse() {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        if octet > 255 {
-            return false;
-        }
-        count += 1;
-    }
-    count == 4
-}
-
-fn valid_ipv6(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-    s.split(':')
-        .all(|part| part.is_empty() || part.chars().all(|c| c.is_ascii_hexdigit()))
-}
-
-fn run_ip(args: &[&str]) -> Result<(), RvpnError> {
-    let output = Command::new("ip")
-        .args(args)
-        .output()
-        .map_err(|e| RvpnError::Service(format!("ip {args:?} failed: {e}")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        if stderr.contains("File exists") {
-            return Ok(());
-        }
-        return Err(RvpnError::Service(format!("ip {args:?} failed: {stderr}")));
-    }
-    Ok(())
 }

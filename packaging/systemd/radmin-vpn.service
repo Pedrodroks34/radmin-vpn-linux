@@ -1,8 +1,8 @@
 [Unit]
 Description=Radmin VPN service (Rust, TAP owner)
-Documentation=https://github.com/ntvmb/radmin-vpn-linux
-Wants=network-online.target
-After=network-online.target
+Documentation=https://github.com/Pedrodroks34/radmin-vpn-linux
+After=graphical-session.target
+Wants=graphical-session.target
 ConditionPathExists=/dev/net/tun
 StartLimitIntervalSec=60
 StartLimitBurst=5
@@ -10,8 +10,6 @@ StartLimitBurst=5
 [Service]
 Type=notify
 NotifyAccess=main
-User=pedrodroks
-Group=pedrodroks
 ExecStartPre=/usr/bin/test -c /dev/net/tun
 ExecStart=/usr/bin/radmin-vpn --json-logs service
 ExecReload=/bin/kill -s SIGHUP $MAINPID
@@ -27,19 +25,21 @@ StateDirectory=radmin-vpn
 StateDirectoryMode=0750
 Environment=RVPN_BUILD_DIR=/usr/lib/radmin-vpn
 
-# Least privilege: run as the unprivileged user and only retain the
-# capabilities needed for TAP, routing and firewall management.
-NoNewPrivileges=true
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
-DeviceAllow=/dev/net/tun rwm
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
-ProtectSystem=full
+# Privilege model: the user manager cannot grant capabilities to children,
+# so AmbientCapabilities/CapabilityBoundingSet are omitted (they make the user
+# service fail to spawn). Instead /usr/bin/radmin-vpn carries file caps
+# (cap_net_admin,cap_net_raw=ep), installed via setcap by the package
+# postinst / `make install`. NoNewPrivileges must stay disabled so the file
+# caps are honoured on exec.
+#
+# NOTE: namespace-based hardening (ProtectSystem, RestrictSUIDSGID,
+# LockPersonality, RestrictAddressFamilies, PrivateTmp=true, ...) must NOT be
+# used here: any of them runs the unit inside a user namespace, where the
+# file capabilities do not apply to the host network namespace and the TAP
+# ioctl (or netlink route/address operations) fails with EPERM.
+NoNewPrivileges=false
 ProtectHome=false
 PrivateTmp=false
-LockPersonality=true
-MemoryDenyWriteExecute=false
-RestrictSUIDSGID=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

@@ -12,7 +12,7 @@ It asks for root privileges to manage the VPN adapter, so be suspicious of it. T
 
 - The maintained components are Rust, in `src/`, `crates/`, `Cargo.toml` and `Cargo.lock`. Review at your own pace.
 - The Rust build and test workflow is enforced in CI ([`.github/workflows/build.yml`](.github/workflows/build.yml)): `cargo fmt --check`, `cargo clippy --all-targets --all-features`, and `cargo test --all-features`.
-- What runs as root: the `radminvpn0` adapter setup and configuration (ioctl-based where possible, `ip` for deletion of service-owned interfaces), the firewall rules (nft/iptables/firewalld, tagged for cleanup), routes, and the systemd service. The netsh relay only accepts validated address strings and never passes them through a shell.
+- What needs elevated privileges: the `radminvpn0` adapter setup and configuration (ioctl-based where possible, netlink in-process where a subprocess cannot hold the privilege), the firewall rules (nft/iptables/firewalld, tagged for cleanup, best-effort), and the routes — granted narrowly through `setcap cap_net_admin,cap_net_raw=ep` on the binary itself, not via a root service. The netsh relay only accepts validated address strings and never passes them through a shell.
 - What gets downloaded: the Radmin installer, from `download.radmin-vpn.com`, checked against a sha256 pinned in the installer module. Nothing else.
 - What Radmin itself sends is Famatech's business, not ours.
 
@@ -29,8 +29,8 @@ This produces the `radmin-vpn` binary and, when built, the Wine-scoped LD_PRELOA
 ```bash
 cargo build --release --workspace
 sudo make install
-sudo systemctl daemon-reload
-sudo systemctl enable --now radmin-vpn.service
+systemctl --user daemon-reload
+systemctl --user enable --now radmin-vpn.service
 ```
 
 See [docs/installation.md](docs/installation.md) for manual install steps and [docs/systemd.md](docs/systemd.md) for unit hardening details.
@@ -40,9 +40,9 @@ See [docs/installation.md](docs/installation.md) for manual install steps and [d
 With the service:
 
 ```bash
-sudo systemctl start radmin-vpn.service
-systemctl reload radmin-vpn.service   # graceful restart (see docs/systemd.md)
-journalctl -u radmin-vpn.service -f
+systemctl --user start radmin-vpn.service
+systemctl --user reload radmin-vpn.service   # graceful restart (see docs/systemd.md)
+journalctl --user -u radmin-vpn.service -f
 ```
 
 Directly:

@@ -5,7 +5,7 @@
 # compiled with MinGW; they are interoperability shims, not Linux code.
 
 PREFIX ?= /usr
-SYSTEMDDIR ?= /usr/lib/systemd/system
+SYSTEMDDIR ?= /usr/lib/systemd/user
 BINDIR ?= $(PREFIX)/bin
 LIBDIR ?= $(PREFIX)/lib
 ASSETDIR ?= $(LIBDIR)/radmin-vpn
@@ -98,6 +98,11 @@ install: target/release/radmin-vpn $(WINBINS)
 	install -d -m 0755 "$(DESTDIR)$(BINDIR)"
 	install -d -m 0755 "$(DESTDIR)$(LIBDIR)"
 	install -Dm0755 target/release/radmin-vpn "$(DESTDIR)$(BINDIR)/radmin-vpn"
+	if [ -z "$(DESTDIR)" ]; then \
+		setcap 'cap_net_admin,cap_net_raw+ep' "$(BINDIR)/radmin-vpn"; \
+	else \
+		setcap 'cap_net_admin,cap_net_raw+ep' "$(DESTDIR)$(BINDIR)/radmin-vpn" 2>/dev/null || echo "warning: could not set file capabilities in staging tree (package postinst will apply them)"; \
+	fi
 	install -Dm0644 packaging/systemd/radmin-vpn.service "$(DESTDIR)$(SYSTEMDDIR)/radmin-vpn.service"
 	install -d -m 0755 "$(DESTDIR)$(ASSETDIR)"
 	for f in $(WINBINS); do install -Dm0644 "$$f" "$(DESTDIR)$(ASSETDIR)/$$(basename $$f)"; done

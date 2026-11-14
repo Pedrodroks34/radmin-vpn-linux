@@ -27,7 +27,7 @@ pub struct ServiceLock {
 
 impl ServiceLock {
     pub fn acquire() -> Result<Self, RvpnError> {
-        let lock_path = PathBuf::from(SERVICE_LOCK_FILE);
+        let lock_path = crate::core::paths::lock_file();
         if let Some(parent) = lock_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| RvpnError::Service(format!("create runtime dir: {e}")))?;
@@ -61,7 +61,7 @@ impl ServiceLock {
 impl Drop for ServiceLock {
     fn drop(&mut self) {
         let _ = unsafe { libc::flock(self.lock_file.as_raw_fd(), libc::LOCK_UN) };
-        let _ = std::fs::remove_file(SERVICE_LOCK_FILE);
+        let _ = std::fs::remove_file(crate::core::paths::lock_file());
     }
 }
 
@@ -138,7 +138,13 @@ impl RadminVpnService {
 
         let mut firewall = FirewallManager::new(&self.config.tap_dev);
         if self.config.firewall {
-            firewall.open()?;
+            // Best-effort: unprivileged user services usually cannot manage
+            // the host firewall (nft/iptables need global caps), so a
+            // rejected rule must not abort startup. Most desktop distros
+            // ACCEPT on INPUT for locally-generated traffic anyway.
+            if let Err(e) = firewall.open() {
+                warn!("firewall setup failed (non-fatal): {e}");
+            }
         }
 
         let tap_guid = self.config.tap_guid.as_deref().unwrap_or(DEFAULT_TAP_GUID);
@@ -159,8 +165,10 @@ impl RadminVpnService {
         let driver_thread = {
             let running = driver_running.clone();
             let mac = adapter_mac;
-            let sock = format!("{}/rvpn.control", SERVICE_RUNTIME_DIR);
-            let _ = std::fs::create_dir_all(SERVICE_RUNTIME_DIR);
+            let sock = crate::core::paths::control_socket()
+                .to_string_lossy()
+                .into_owned();
+            let _ = crate::core::paths::ensure_dir(&crate::core::paths::runtime_dir());
             std::thread::Builder::new()
                 .name("rvpn-driver".to_string())
                 .spawn(move || crate::driver::userspace::run(mac, &sock, running))
@@ -279,7 +287,7 @@ impl RadminVpnService {
             let _ = std::fs::remove_file(path);
         }
         let _ = std::fs::remove_file(format!("{NETSH_CMD_FILE}.proc"));
-        let _ = std::fs::remove_file(format!("{SERVICE_RUNTIME_DIR}/rvpn.control"));
+        let _ = std::fs::remove_file(crate::core::paths::control_socket());
 
         let _ = destroy_owned_interface(&self.config.tap_dev);
 
@@ -433,9 +441,9 @@ impl RadminVpnService {
 }
 
 fn load_or_create_adapter_mac() -> MacAddress {
-    let path = PathBuf::from(
-        std::env::var("RVPN_MAC_STATE_FILE").unwrap_or_else(|_| MAC_STATE_FILE.to_string()),
-    );
+    let path = std::env::var_os("RVPN_MAC_STATE_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(crate::core::paths::mac_state_file);
 
     if let Ok(contents) = std::fs::read_to_string(&path) {
         if let Ok(mac) = MacAddress::parse(contents.trim()) {

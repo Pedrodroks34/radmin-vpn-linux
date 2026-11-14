@@ -40,7 +40,7 @@
             done
             echo "installPhase: using cargo output directory: $targetDir"
 
-            install -d $out/bin $out/lib/radmin-vpn $out/lib/systemd/system
+            install -d $out/bin $out/lib/radmin-vpn $out/lib/systemd/user
             install -m755 "$targetDir/radmin-vpn" $out/bin/radmin-vpn
 
             if [ -f "$targetDir/librvpn_dnsfix.so" ]; then
@@ -50,7 +50,7 @@
               install -m644 "$targetDir/librvpn_reuseport.so" $out/lib/radmin-vpn/rvpn_reuseport.so
             fi
 
-            cp packaging/systemd/radmin-vpn.service $out/lib/systemd/system/radmin-vpn.service
+            cp packaging/systemd/radmin-vpn.service $out/lib/systemd/user/radmin-vpn.service
 
             runHook postInstall
           '';

@@ -1,4 +1,5 @@
 use crate::core::constants::*;
+use crate::core::paths;
 use crate::core::types::MacAddress;
 use crate::core::types::RvpnError;
 use nix::errno::Errno;
@@ -24,16 +25,10 @@ const IFF_UP: libc::c_short = 0x0001;
 const IFF_TAP: libc::c_uint = 0x0002;
 const IFF_NO_PI: libc::c_uint = 0x1000;
 
-pub const RUNTIME_DIR: &str = "/run/radmin-vpn";
-
-pub const STATE_DIR: &str = "/var/lib/radmin-vpn";
-
-pub const TAP_STATE_FILE: &str = "/var/lib/radmin-vpn/tap.state";
-
 fn tap_state_file() -> PathBuf {
     std::env::var_os("RVPN_TAP_STATE_FILE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(TAP_STATE_FILE))
+        .unwrap_or_else(paths::tap_state_file)
 }
 
 fn write_state(name: &str) -> std::io::Result<()> {
@@ -72,17 +67,12 @@ pub fn destroy_owned_interface(name: &str) -> Result<bool, RvpnError> {
         return Ok(false);
     }
 
-    let status = std::process::Command::new("ip")
-        .args(["link", "delete", name])
-        .status()
-        .map_err(|e| RvpnError::Tap(format!("ip link delete failed: {e}")))?;
-
-    if status.success() {
+    if crate::network::netlink::link_delete(name)? {
         clear_owned_interface();
         info!("Deleted owned TAP interface {name}");
         Ok(true)
     } else {
-        Err(RvpnError::Tap(format!("ip link delete {name} failed")))
+        Ok(false)
     }
 }
 
@@ -458,21 +448,14 @@ impl TapInterface {
             return Ok(());
         }
 
-        let status = std::process::Command::new("ip")
-            .args(["link", "delete", &self.name])
-            .status()
-            .map_err(|e| RvpnError::Tap(format!("ip link delete failed: {e}")))?;
-
-        if status.success() {
+        if crate::network::netlink::link_delete(&self.name)? {
             info!("Deleted TAP interface {}", self.name);
             self.owned = false;
             clear_owned_interface();
             Ok(())
         } else {
-            Err(RvpnError::Tap(format!(
-                "ip link delete {} failed",
-                self.name
-            )))
+            clear_owned_interface();
+            Ok(())
         }
     }
 }

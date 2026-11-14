@@ -4,10 +4,10 @@ Radmin can be run without a local desktop for servers/VPSs.
 
 ## Service-only mode
 
-Use the systemd service:
+Use the systemd user service:
 
 ```bash
-sudo systemctl enable --now radmin-vpn.service
+systemctl --user enable --now radmin-vpn.service
 ```
 
 The service starts the TAP adapter, bridge, firewall/routes, and Wine/Radmin processes according to its configuration. Interaction with the Radmin GUI is optional; when `--no-ui` is set, no desktop session is required. When a graphical session exists, the service injects its `DISPLAY`/`XAUTHORITY` into Wine processes so the desktop and the GUI work normally; see [installation.md](installation.md#graphical-session-and-the-radmin-gui).

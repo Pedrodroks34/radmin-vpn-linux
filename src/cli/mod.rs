@@ -357,9 +357,11 @@ fn cmd_status() -> Result<(), RvpnError> {
         }
     }
 
-    let lock_exists = std::path::Path::new(SERVICE_LOCK_FILE).exists();
+    let lock_file = crate::core::paths::lock_file();
+    let lock_exists = lock_file.exists();
     println!(
-        "Lock file {SERVICE_LOCK_FILE}: {}",
+        "Lock file {}: {}",
+        lock_file.display(),
         if lock_exists { "present" } else { "absent" }
     );
 
@@ -442,10 +444,7 @@ fn cmd_health_check() -> Result<(), RvpnError> {
         if tun_exists { "available" } else { "not found" }
     );
 
-    match std::process::Command::new("ip").arg("link").output() {
-        Ok(_) => println!("iproute2: available"),
-        Err(_) => println!("iproute2: not found"),
-    }
+    println!("networking: in-process netlink (iproute2 not required)");
 
     let nft_ok = std::process::Command::new("nft")
         .arg("--version")
@@ -487,9 +486,6 @@ fn check_prerequisites() -> Result<(), RvpnError> {
     }
     if std::process::Command::new("wineserver").output().is_err() {
         missing.push("wineserver");
-    }
-    if std::process::Command::new("ip").output().is_err() {
-        missing.push("ip (iproute2)");
     }
 
     let nft_ok = std::process::Command::new("nft")

@@ -10,8 +10,6 @@ pub const NETSH_CMD_FILE_PROC: &str = "/tmp/radmin_netsh_cmd.proc";
 
 pub const MAC_FILE: &str = "/tmp/rvpn_mac";
 
-pub const MAC_STATE_FILE: &str = "/var/lib/radmin-vpn/mac";
-
 pub const DRIVER_LOG: &str = "/tmp/radmin_driver.log";
 
 pub const FILTER_PATH: &str = "/tmp/rvpn_filters.json";
@@ -41,10 +39,6 @@ pub const TAP_IP_PREFIX: u8 = 8;
 pub const NETSH_RELAY_POLL_SECS: f64 = 0.1;
 
 pub const SERVICE_READY_TIMEOUT_SECS: u64 = 30;
-
-pub const SERVICE_LOCK_FILE: &str = "/run/radmin-vpn/service.lock";
-
-pub const SERVICE_RUNTIME_DIR: &str = "/run/radmin-vpn";
 
 pub const DEFAULT_WINEPREFIX: &str = "$HOME/.local/share/radmin-vpn-linux/wineprefix";
 

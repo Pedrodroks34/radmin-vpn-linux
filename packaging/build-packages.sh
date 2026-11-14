@@ -35,7 +35,7 @@ set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 PREFIX="${PREFIX:-/usr}"
-SYSD="${SYSTEMDDIR:-/usr/lib/systemd/system}"
+SYSD="${SYSTEMDDIR:-/usr/lib/systemd/user}"
 DOC="${DOCDIR:-/usr/share/doc/radmin-vpn-linux}"
 
 if [ "$PREFIX" = "/usr" ] && [ "$(id -u)" -ne 0 ]; then
@@ -44,7 +44,13 @@ if [ "$PREFIX" = "/usr" ] && [ "$(id -u)" -ne 0 ]; then
 fi
 
 install -Dm755 usr/bin/radmin-vpn "$PREFIX/bin/radmin-vpn"
-install -Dm0644 usr/lib/systemd/system/radmin-vpn.service "$SYSD/radmin-vpn.service"
+if command -v setcap >/dev/null 2>&1; then
+  setcap 'cap_net_admin,cap_net_raw+ep' "$PREFIX/bin/radmin-vpn"
+else
+  echo "warning: setcap not found; run: setcap 'cap_net_admin,cap_net_raw+ep' $PREFIX/bin/radmin-vpn" >&2
+fi
+install -Dm0644 usr/lib/systemd/user/radmin-vpn.service "$SYSD/radmin-vpn.service"
+rm -f /usr/lib/systemd/system/radmin-vpn.service || true
 rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
 install -d -m 0755 "$PREFIX/lib/radmin-vpn"
 for f in usr/lib/radmin-vpn/*; do
@@ -59,7 +65,8 @@ for f in README.md LICENSE; do
 done
 
 echo "installed into $PREFIX"
-echo "enable the service with: systemctl daemon-reload && systemctl enable --now radmin-vpn.service"
+echo "enable the service with: systemctl --user daemon-reload && systemctl --user enable --now radmin-vpn.service"
+echo "for boot-time start even without login: loginctl enable-linger \$USER"
 EOF
 cat > "$WORK/tar/$NAME-$VERSION-x86_64/uninstall.sh" <<'EOF'
 #!/bin/sh
@@ -67,7 +74,7 @@ set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 PREFIX="${PREFIX:-/usr}"
-SYSD="${SYSTEMDDIR:-/usr/lib/systemd/system}"
+SYSD="${SYSTEMDDIR:-/usr/lib/systemd/user}"
 DOC="${DOCDIR:-/usr/share/doc/radmin-vpn-linux}"
 
 if [ "$PREFIX" = "/usr" ] && [ "$(id -u)" -ne 0 ]; then
@@ -75,10 +82,10 @@ if [ "$PREFIX" = "/usr" ] && [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-systemctl disable --now radmin-vpn.service >/dev/null 2>&1 || true
-rm -f "$PREFIX/bin/radmin-vpn" "$SYSD/radmin-vpn.service" /usr/lib/tmpfiles.d/radmin-vpn.conf
+systemctl --user disable --now radmin-vpn.service >/dev/null 2>&1 || true
+rm -f "$PREFIX/bin/radmin-vpn" "$SYSD/radmin-vpn.service" /usr/lib/tmpfiles.d/radmin-vpn.conf /usr/lib/systemd/system/radmin-vpn.service
 rm -rf "$PREFIX/lib/radmin-vpn" "$DOC"
-systemctl daemon-reload
+systemctl daemon-reload || true
 echo "uninstalled"
 EOF
 chmod 755 "$WORK/tar/$NAME-$VERSION-x86_64/install.sh" "$WORK/tar/$NAME-$VERSION-x86_64/uninstall.sh"
@@ -96,7 +103,7 @@ Section: net
 Priority: optional
 Architecture: amd64
 Maintainer: Pedrodroks34 <droks5804@gmail.com>
-Depends: wine | wine64 | wine32, iproute2, iptables, systemd, libc6
+Depends: wine | wine64 | wine32, iptables, systemd, libc6, libcap2-bin
 Homepage: https://github.com/Pedrodroks34/radmin-vpn-linux
 Description: Radmin VPN client for Linux (Wine + TAP bridge)
  Runs the proprietary Radmin VPN Windows service and GUI under Wine,
@@ -107,18 +114,20 @@ cat > "$DEBROOT/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
 rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
+rm -f /usr/lib/systemd/system/radmin-vpn.service || true
+if command -v setcap >/dev/null 2>&1; then
+  setcap 'cap_net_admin,cap_net_raw+ep' /usr/bin/radmin-vpn || true
+else
+  echo "warning: setcap (libcap2-bin) not found; run: sudo setcap 'cap_net_admin,cap_net_raw+ep' /usr/bin/radmin-vpn" >&2
+fi
 if [ -d /run/systemd/system ]; then
-  systemctl daemon-reload
-  systemctl enable radmin-vpn.service >/dev/null 2>&1 || true
+  systemctl daemon-reload || true
 fi
 exit 0
 EOF
 cat > "$DEBROOT/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -e
-if [ -d /run/systemd/system ]; then
-  systemctl disable --now radmin-vpn.service >/dev/null 2>&1 || true
-fi
 exit 0
 EOF
 cat > "$DEBROOT/DEBIAN/postrm" <<'EOF'
@@ -148,7 +157,7 @@ Summary:        Radmin VPN client for Linux (Wine + TAP bridge)
 License:        GPL-3.0-only
 URL:            https://github.com/Pedrodroks34/radmin-vpn-linux
 BuildArch:      x86_64
-Requires:       wine, iproute, iptables, systemd
+Requires:       wine, iptables, systemd, libcap
 
 %description
 Runs the proprietary Radmin VPN Windows service and GUI under Wine,
@@ -162,20 +171,23 @@ cp -a %{stagedir}/. %{buildroot}/
 %files
 /usr/bin/radmin-vpn
 /usr/lib/radmin-vpn
-/usr/lib/systemd/system/radmin-vpn.service
+/usr/lib/systemd/user/radmin-vpn.service
 /usr/share/doc/radmin-vpn-linux
 
 %post
 rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || :
+rm -f /usr/lib/systemd/system/radmin-vpn.service || :
+if command -v setcap >/dev/null 2>&1; then
+    setcap 'cap_net_admin,cap_net_raw+ep' /usr/bin/radmin-vpn || :
+else
+    echo "warning: setcap (libcap) not found; run: sudo setcap 'cap_net_admin,cap_net_raw+ep' /usr/bin/radmin-vpn" >&2
+fi
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload || :
-    systemctl enable radmin-vpn.service >/dev/null 2>&1 || :
 fi
 
 %preun
-if [ "\$1" = "0" ] && [ -d /run/systemd/system ]; then
-    systemctl disable --now radmin-vpn.service >/dev/null 2>&1 || :
-fi
+( : )
 
 %postun
 if [ -d /run/systemd/system ]; then

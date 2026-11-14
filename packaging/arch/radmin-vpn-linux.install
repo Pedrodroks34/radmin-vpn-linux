@@ -1,16 +1,29 @@
 post_install() {
   rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
-  systemctl daemon-reload
-  systemctl enable radmin-vpn.service || true
+  rm -f /usr/lib/systemd/system/radmin-vpn.service || true
+  systemctl daemon-reload || true
+  if command -v setcap >/dev/null 2>&1; then
+    setcap 'cap_net_admin,cap_net_raw+ep' /usr/bin/radmin-vpn || true
+  else
+    echo "warning: setcap (libcap) not found; run: sudo setcap 'cap_net_admin,cap_net_raw+ep' /usr/bin/radmin-vpn"
+  fi
+  echo "Enable with: systemctl --user enable --now radmin-vpn.service"
+  echo "For boot-time start: loginctl enable-linger \$USER"
 }
 
 post_upgrade() {
   rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
-  systemctl daemon-reload
+  rm -f /usr/lib/systemd/system/radmin-vpn.service || true
+  systemctl daemon-reload || true
+  if command -v setcap >/dev/null 2>&1; then
+    setcap 'cap_net_admin,cap_net_raw+ep' /usr/bin/radmin-vpn || true
+  else
+    echo "warning: setcap (libcap) not found; run: sudo setcap 'cap_net_admin,cap_net_raw+ep' /usr/bin/radmin-vpn"
+  fi
 }
 
 post_remove() {
   rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
-  systemctl disable radmin-vpn.service || true
-  systemctl daemon-reload
+  rm -f /usr/lib/systemd/system/radmin-vpn.service || true
+  systemctl daemon-reload || true
 }

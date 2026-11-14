@@ -13,32 +13,32 @@ Tagged releases on GitHub publish ready-to-install packages (built by CI):
 | Pacman | Arch, CachyOS | `radmin-vpn-linux-<version>-1-x86_64.pkg.tar.zst` |
 | Tarball | any | `radmin-vpn-linux-<version>-x86_64.tar.gz` (with `install.sh`/`uninstall.sh`) |
 
-The unit file runs the service as `User=pedrodroks` (the machine this project is developed on). On other machines create that user, or better, override `User=` with a drop-in before enabling:
+The service is a **user** unit (`/usr/lib/systemd/user/radmin-vpn.service`), so it runs as whatever desktop user enables it — no accounts to create or match. Enable it with `systemctl --user`, not `systemctl`:
 
 ```sh
-sudo systemctl edit radmin-vpn.service   # systemd opens an editor
-# or non-interactively:
-sudo mkdir -p /etc/systemd/system/radmin-vpn.service.d
-printf '[Service]\nUser=%s\n' "$USER" | sudo tee /etc/systemd/system/radmin-vpn.service.d/user.conf
-sudo systemctl daemon-reload
-sudo systemctl enable --now radmin-vpn.service
+systemctl --user daemon-reload
+systemctl --user enable --now radmin-vpn.service
+# optional, for boot-time start before login:
+loginctl enable-linger "$USER"
 ```
+
+And it controls the TAP interface lifecycle for that user.
 
 ## Dependencies
 
 Common requirements:
 
 - Linux with TUN/TAP (`/dev/net/tun`) — enable it early; on minimal kernels `modprobe tun` may be required
-- nftables **or** iptables (firewall backend auto-detected)
+- nftables **or** iptables (firewall backend auto-detected; on hardened hosts a one-off manual rule may be needed — see [systemd.md](systemd.md#privilege-model-file-capabilities))
+- libcap (`setcap`, applied by the package postinst / `make install` — no network tool is needed for routes/addresses)
 - Wine (required to run the proprietary Radmin service/GUI)
-- `iproute2`
 - Rust toolchain (`rustup` recommended for cross-compilation targets)
 - GTK4 development files **only** if you want the optional GTK4 filter UI (`--features gui`)
 
 ### Arch Linux / CachyOS
 
 ```sh
-sudo pacman -S --needed rust nftables wine iproute2 curl
+sudo pacman -S --needed rust nftables wine curl
 # For cross-compilation:
 sudo pacman -S --needed rustup mingw-w64-gcc
 rustup target add x86_64-pc-windows-gnu
@@ -48,7 +48,7 @@ rustup target add x86_64-pc-windows-gnu
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y cargo rustc nftables wine iproute2 curl
+sudo apt-get install -y cargo rustc nftables wine curl
 # For cross-compilation:
 sudo apt-get install -y rustup gcc-mingw-w64-x86-64
 rustup target add x86_64-pc-windows-gnu
@@ -57,7 +57,7 @@ rustup target add x86_64-pc-windows-gnu
 ### Fedora
 
 ```sh
-sudo dnf install -y rust cargo nftables wine iproute2 curl
+sudo dnf install -y rust cargo nftables wine curl
 # For cross-compilation:
 sudo dnf install -y rustup mingw64-gcc
 rustup target add x86_64-pc-windows-gnu
@@ -75,25 +75,27 @@ The main binary is `target/release/radmin-vpn`. The workspace also builds the Wi
 
 ```sh
 sudo install -Dm755 target/release/radmin-vpn /usr/bin/radmin-vpn
-sudo install -Dm644 packaging/systemd/radmin-vpn.service /usr/lib/systemd/system/radmin-vpn.service
-# The /run/radmin-vpn runtime dir is created by the unit's RuntimeDirectory=
+sudo install -Dm644 packaging/systemd/radmin-vpn.service /usr/lib/systemd/user/radmin-vpn.service
+# The binary carries file caps so the user service can manage the TAP and routes:
+setcap 'cap_net_admin,cap_net_raw+ep' /usr/bin/radmin-vpn
+# The runtime dir is created by the unit's RuntimeDirectory=
 # on every start (with the correct owner); no tmpfiles.d snippet is needed.
 # Optional LD_PRELOAD shims (recommended for Wine/Radmin compatibility):
 sudo install -Dm755 target/release/librvpn_dnsfix.so /usr/lib/radmin-vpn/rvpn_dnsfix.so
 sudo install -Dm755 target/release/librvpn_reuseport.so /usr/lib/radmin-vpn/rvpn_reuseport.so
 
-sudo systemctl daemon-reload
+systemctl --user daemon-reload
 ```
 
 ## Enable the service
 
 ```sh
-sudo systemctl enable --now radmin-vpn.service
-systemctl status radmin-vpn.service
-journalctl -u radmin-vpn.service -f
+systemctl --user enable --now radmin-vpn.service
+systemctl --user status radmin-vpn.service
+journalctl --user -u radmin-vpn.service -f
 ```
 
-The service owns the TAP interface and records ownership in `/var/lib/radmin-vpn/tap.state`. Stopping the Radmin GUI does **not** remove the interface; stop the service instead.
+The service owns the TAP interface and records ownership in `$HOME/.local/state/radmin-vpn/tap.state`. Stopping the Radmin GUI does **not** remove the interface; stop the service instead (`systemctl --user stop radmin-vpn.service`).
 
 ## Graphical session and the Radmin GUI
 
@@ -108,7 +110,7 @@ logged in.
 At boot before you log in there is no session to detect: the service still runs
 the VPN headless (the VPN works), but the Wine desktop is created without a
 display driver and the GUI will fail with `winediag:nodrv_CreateWindow`. After
-logging in, restart the service once (`sudo systemctl restart radmin-vpn.service`)
+logging in, restart the service once (`systemctl --user restart radmin-vpn.service`)
 to recreate the Wine session with your session's display; from then on the GUI
 works normally.
 
@@ -119,8 +121,8 @@ requests shutdown so systemd can restart it cleanly instead of running dead.
 
 ```sh
 # Service state and logs
-systemctl status radmin-vpn.service
-journalctl -u radmin-vpn.service --no-pager -n 50
+systemctl --user status radmin-vpn.service
+journalctl --user -u radmin-vpn.service --no-pager -n 50
 
 # Interface
 ip addr show radminvpn0   # after RvControlSvc registers, the Radmin IPv4 (and ULA IPv6) appears
@@ -131,33 +133,31 @@ ip route show             # 26.0.0.0/8 dev radminvpn0 plus 224.0.0.0/4 and 255.2
 # via the HKCU\Software\Wine\DllOverrides "netsh.exe"="native" override that
 # `configure_registry` writes, writes /tmp/radmin_netsh_cmd, and the Rust
 # netsh relay applies it to radminvpn0. If the address never shows up, check
-# /tmp/radmin_netsh_all.log and `journalctl -u radmin-vpn.service | grep -i relay`.
+# /tmp/radmin_netsh_all.log and `journalctl --user -u radmin-vpn.service | grep -i relay`.
 
 # Lock/ownership
-ls -l /run/radmin-vpn/service.lock
-cat /var/lib/radmin-vpn/tap.state
+ls -l "$XDG_RUNTIME_DIR/radmin-vpn/service.lock"
+cat "$HOME/.local/state/radmin-vpn/tap.state"
 
 # Reload behavior (best-effort graceful restart)
-systemctl reload radmin-vpn.service
-journalctl -u radmin-vpn.service --no-pager -n 20
+systemctl --user reload radmin-vpn.service
+journalctl --user -u radmin-vpn.service --no-pager -n 20
 
 # Stop and cleanup
-sudo systemctl stop radmin-vpn.service
+systemctl --user stop radmin-vpn.service
 ip link show radminvpn0 || echo "TAP removed"
 ```
 
 ## Uninstall
 
 ```sh
-sudo systemctl disable --now radmin-vpn.service
-sudo rm -f /usr/lib/systemd/system/radmin-vpn.service
-sudo rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf   # removes stale config from older versions
-sudo rm -rf /usr/lib/radmin-vpn /run/radmin-vpn
-sudo rm -f /run/radmin-vpn/service.lock
+systemctl --user disable --now radmin-vpn.service
+sudo rm -f /usr/lib/systemd/user/radmin-vpn.service /usr/lib/systemd/system/radmin-vpn.service
+sudo rm -rf /usr/lib/radmin-vpn "$XDG_RUNTIME_DIR/radmin-vpn" "$HOME/.local/state/radmin-vpn"
 sudo systemctl daemon-reload
 ```
 
-Packages newer than 1.2.1 remove `/usr/lib/tmpfiles.d/radmin-vpn.conf` automatically on install/upgrade (via postinst / post_install / tarball installer).
+Packages newer than 1.2.2 remove the stale system-wide unit and `/usr/lib/tmpfiles.d/radmin-vpn.conf` automatically on install/upgrade (via postinst / post_install / tarball installer).
 
 ## Windows PE cross-build notes
 

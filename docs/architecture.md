@@ -19,6 +19,6 @@ Linux app ← TAP (radminvpn0) ← radmin-vpn (bridge) ← FIFOs ← driver shim
 
 ## Limitations
 
-- One service instance at a time (exclusive `/run/radmin-vpn/service.lock`).
+- One service instance at a time (exclusive lock in `$XDG_RUNTIME_DIR/radmin-vpn/service.lock`).
 - The `26.0.0.0/8` route and broadcast/multicast routes apply system-wide only while the service runs and are removed on clean shutdown.
 - Wine's missing PerfLib exports and Famatech's updater behavior remain external constraints.
