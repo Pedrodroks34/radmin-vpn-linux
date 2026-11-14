@@ -10,6 +10,8 @@ pub const NETSH_CMD_FILE_PROC: &str = "/tmp/radmin_netsh_cmd.proc";
 
 pub const MAC_FILE: &str = "/tmp/rvpn_mac";
 
+pub const MAC_STATE_FILE: &str = "/var/lib/radmin-vpn/mac";
+
 pub const DRIVER_LOG: &str = "/tmp/radmin_driver.log";
 
 pub const FILTER_PATH: &str = "/tmp/rvpn_filters.json";

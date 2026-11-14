@@ -129,7 +129,7 @@ impl RadminVpnService {
             .map(|s| MacAddress::parse(s))
             .transpose()
             .map_err(|e| RvpnError::Config(format!("invalid adapter MAC: {e}")))?
-            .unwrap_or_else(generate_random_mac);
+            .unwrap_or_else(load_or_create_adapter_mac);
 
         let tap = configure_tap(&self.config.tap_dev, adapter_mac, DEFAULT_MTU, true)?;
 
@@ -432,6 +432,37 @@ impl RadminVpnService {
     }
 }
 
+fn load_or_create_adapter_mac() -> MacAddress {
+    let path = PathBuf::from(
+        std::env::var("RVPN_MAC_STATE_FILE").unwrap_or_else(|_| MAC_STATE_FILE.to_string()),
+    );
+
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Ok(mac) = MacAddress::parse(contents.trim()) {
+            info!("Reusing persisted adapter MAC {mac}");
+            return mac;
+        }
+        warn!(
+            "Ignoring invalid persisted adapter MAC in {}",
+            path.display()
+        );
+    }
+
+    let mac = generate_random_mac();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(&path, format!("{mac}\n")) {
+        warn!("Failed to persist adapter MAC to {}: {e}", path.display());
+    } else {
+        info!(
+            "Generated and persisted adapter MAC {mac} in {}",
+            path.display()
+        );
+    }
+    mac
+}
+
 fn generate_random_mac() -> MacAddress {
     use std::time::SystemTime;
     let seed = SystemTime::now()
@@ -457,5 +488,19 @@ mod tests {
         assert!(mac.is_locally_administered());
         assert!(!mac.is_group());
         assert!(!mac.is_broadcast());
+    }
+
+    #[test]
+    fn persisted_mac_roundtrip() {
+        let unique = format!("radmin-vpn-test-mac-{}.mac", std::process::id());
+        let path = std::env::temp_dir().join(unique);
+        std::env::set_var("RVPN_MAC_STATE_FILE", &path);
+
+        let mac = load_or_create_adapter_mac();
+        let again = load_or_create_adapter_mac();
+        assert_eq!(mac.bytes(), again.bytes());
+
+        std::env::remove_var("RVPN_MAC_STATE_FILE");
+        let _ = std::fs::remove_file(&path);
     }
 }
