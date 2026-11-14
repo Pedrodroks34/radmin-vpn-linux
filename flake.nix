@@ -29,14 +29,25 @@
           installPhase = ''
             runHook preInstall
 
-            install -d $out/bin $out/lib/radmin-vpn $out/lib/systemd/system $out/lib/tmpfiles.d
-            cp target/release/radmin-vpn $out/bin/radmin-vpn
+            # The derivation builds with --target <triple>, so cargo puts the
+            # artifacts under target/<triple>/release, not target/release.
+            targetDir=target/release
+            for d in target/*-gnu/release target/*-musl/release; do
+              if [ -x "$d/radmin-vpn" ]; then
+                targetDir="$d"
+                break
+              fi
+            done
+            echo "installPhase: using cargo output directory: $targetDir"
 
-            if [ -f target/release/librvpn_dnsfix.so ]; then
-              cp target/release/librvpn_dnsfix.so $out/lib/radmin-vpn/rvpn_dnsfix.so
+            install -d $out/bin $out/lib/radmin-vpn $out/lib/systemd/system $out/lib/tmpfiles.d
+            install -m755 "$targetDir/radmin-vpn" $out/bin/radmin-vpn
+
+            if [ -f "$targetDir/librvpn_dnsfix.so" ]; then
+              install -m644 "$targetDir/librvpn_dnsfix.so" $out/lib/radmin-vpn/rvpn_dnsfix.so
             fi
-            if [ -f target/release/librvpn_reuseport.so ]; then
-              cp target/release/librvpn_reuseport.so $out/lib/radmin-vpn/rvpn_reuseport.so
+            if [ -f "$targetDir/librvpn_reuseport.so" ]; then
+              install -m644 "$targetDir/librvpn_reuseport.so" $out/lib/radmin-vpn/rvpn_reuseport.so
             fi
 
             cp packaging/systemd/radmin-vpn.service $out/lib/systemd/system/radmin-vpn.service

@@ -18,16 +18,20 @@ if [ -z "$VERSION" ]; then
 fi
 
 PREP="$(mktemp -d)"
-trap 'rm -rf "$PREP"' EXIT
+trap 'rm -rf "$PREP" 2>/dev/null || true' EXIT
+
 cp -a "$ROOT/packaging" "$PREP/pkg"
 sed -i "s/@PKGVER@/$VERSION/" "$PREP/pkg/arch/PKGBUILD"
 mkdir -p "$OUT"
 chmod -R u+rwX "$PREP"
 
+image="${ARCHLINUX_IMAGE:-archlinux:latest}"
+
 if command -v docker >/dev/null 2>&1; then
-  image="${ARCHLINUX_IMAGE:-archlinux:latest}"
+  echo "building Arch package with docker ($image)"
   docker run --rm \
     -e STAGE_ROOT=/src \
+    -e PACKAGER="radmin-vpn-linux CI" \
     -v "$ROOT:/src:Z" \
     -v "$PREP:/work:Z" \
     -w /work/pkg/arch \
@@ -38,16 +42,21 @@ if command -v docker >/dev/null 2>&1; then
       useradd -m builder 2>/dev/null || true
       chmod -R a+rwX /work
       chown -R builder:builder /work
-      su builder -s /bin/bash -c "STAGE_ROOT=/src makepkg -f --noconfirm --skipinteg --nodeps"
+      su builder -s /bin/bash -c "STAGE_ROOT=/src PACKAGER=\"$PACKAGER\" makepkg -f --noconfirm --skipinteg --nodeps"
     '
   cp "$PREP"/pkg/arch/*.pkg.tar.zst "$OUT"/
-elif command -v makepkg >/dev/null 2>&1; then
-  (cd "$PREP/pkg/arch" && STAGE_ROOT="$ROOT" makepkg -f --noconfirm --skipinteg --nodeps)
-  cp "$PREP"/pkg/arch/*.pkg.tar.zst "$OUT"/
+  docker run --rm -v "$PREP:/work:Z" "$image" rm -rf /work
 else
-  echo "error: docker or makepkg required to build the .pkg.tar.zst" >&2
-  exit 1
+  if ! command -v makepkg >/dev/null 2>&1; then
+    echo "error: docker or makepkg required to build the .pkg.tar.zst" >&2
+    exit 1
+  fi
+  echo "building Arch package with native makepkg"
+  (cd "$PREP/pkg/arch" && STAGE_ROOT="$ROOT" PACKAGER="${PACKAGER:-radmin-vpn-linux CI}" makepkg -f --noconfirm --skipinteg --nodeps)
+  cp "$PREP"/pkg/arch/*.pkg.tar.zst "$OUT"/
 fi
+
+rm -rf "$PREP" 2>/dev/null || true
 
 echo "built Arch package in $OUT"
 ls -l "$OUT"

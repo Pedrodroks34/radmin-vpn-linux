@@ -9,6 +9,7 @@ license=('GPL-3.0-only')
 depends=('wine' 'iproute2' 'iptables' 'systemd')
 provides=('radmin-vpn')
 install="$pkgname.install"
+options=('!debug')
 source=()
 sha256sums=()
 
