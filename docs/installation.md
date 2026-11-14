@@ -63,6 +63,21 @@ sudo dnf install -y rustup mingw64-gcc
 rustup target add x86_64-pc-windows-gnu
 ```
 
+## Install Radmin VPN into the Wine prefix (first-time setup)
+
+The Radmin VPN Windows binaries are proprietary — they are **not** (and cannot be) distributed with this project. The service only installs the open-source shims; for the VPN itself you must install Famatech's official installer into the same Wine prefix the service uses. Do this once per machine/prefix:
+
+```sh
+# download Radmin VPN from https://www.radmin-vpn.com/download/
+WINEPREFIX="$HOME/.local/share/radmin-vpn-linux/wineprefix" wine RadminVPN_2.1.4952.2_*.msi
+```
+
+If the service is already running and the prefix doesn't contain `C:\Program Files (x86)\Radmin VPN\RvControlSvc.exe` yet, the service exits with an error naming exactly what is missing. After installing the MSI, (re)start the service:
+
+```sh
+systemctl --user restart radmin-vpn.service
+```
+
 ## Build
 
 ```sh

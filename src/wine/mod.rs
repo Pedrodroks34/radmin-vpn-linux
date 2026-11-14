@@ -122,6 +122,23 @@ impl WineProcessManager {
         info!("Installing components into Wine prefix");
 
         let radmin_dir = self.radmin_dir();
+
+        // The Radmin VPN binaries are proprietary and cannot be shipped; the
+        // user installs them from the official Famatech MSI into this prefix.
+        // Without that installation, every file copy would fail with a bare
+        // "No such file or directory", so detect it up front and say what to
+        // do.
+        if !radmin_dir.join("RvControlSvc.exe").exists() {
+            return Err(RvpnError::Wine(format!(
+                "Radmin VPN is not installed in the Wine prefix ({} missing). \
+                 Download it from https://www.radmin-vpn.com/download/ and \
+                 install it into this prefix: WINEPREFIX={} wine RadminVPN_*.msi; \
+                 then restart radmin-vpn.service.",
+                radmin_dir.join("RvControlSvc.exe").display(),
+                self.wine_prefix.display()
+            )));
+        }
+
         let drivers_dir = self.wine_prefix.join("drive_c/windows/system32/drivers");
 
         std::fs::create_dir_all(&drivers_dir)

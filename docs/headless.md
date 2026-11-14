@@ -10,6 +10,8 @@ Use the systemd user service:
 systemctl --user enable --now radmin-vpn.service
 ```
 
+> First-time setup requires the proprietary Radmin VPN installed into the Wine prefix — see [installation.md](installation.md#install-radmin-vpn-into-the-wine-prefix-first-time-setup). The service tells you exactly what is missing if it isn't.
+
 The service starts the TAP adapter, bridge, firewall/routes, and Wine/Radmin processes according to its configuration. Interaction with the Radmin GUI is optional; when `--no-ui` is set, no desktop session is required. When a graphical session exists, the service injects its `DISPLAY`/`XAUTHORITY` into Wine processes so the desktop and the GUI work normally; see [installation.md](installation.md#graphical-session-and-the-radmin-gui).
 
 Example unit command line:
@@ -30,6 +32,6 @@ Minimal flow:
 
 ## Notes
 
-- The service manages TAP routes/firewall state and must be stopped cleanly.
-- Running as root is required for TAP, routing, and firewall configuration.
+- The service manages TAP routes/addresses and must be stopped cleanly.
+- Network privileges come from file capabilities on the binary (`cap_net_admin,cap_net_raw`), not from running as root; the firewall step is best-effort on hardened hosts (see [systemd.md](systemd.md)).
 - See [systemd.md](systemd.md) for hardening guidance and [installation.md](installation.md) for distro-specific steps.

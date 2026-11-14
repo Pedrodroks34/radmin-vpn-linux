@@ -6,7 +6,7 @@
 //! and file capabilities do not propagate to subprocesses.
 
 use crate::core::types::RvpnError;
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -59,13 +59,26 @@ async fn link_index(handle: &rtnetlink::Handle, name: &str) -> Result<Option<u32
 /// Delete the interface `name`. Returns true if it existed and was deleted.
 pub fn link_delete(name: &str) -> Result<bool, RvpnError> {
     block_on(async move {
-        let (task, handle) = new_conn_handle().await?;
+        let (task, mut handle) = new_conn_handle().await?;
         let result = async {
             let Some(index) = link_index(&handle, name).await? else {
                 return Ok(false);
             };
-            let mut link = handle.link();
-            link.del(index).execute().await.map_err(map_err)?;
+            // rtnetlink 0.7's LinkDelRequest hardcodes NLM_F_CREATE|NLM_F_EXCL
+            // on the delete message, which the kernel rejects with
+            // EOPNOTSUPP. Build a plain RTM_DELLINK instead.
+            let mut message = rtnetlink::packet::LinkMessage::default();
+            message.header.index = index;
+            let mut req = rtnetlink::packet::NetlinkMessage::from(
+                rtnetlink::packet::RtnlMessage::DelLink(message),
+            );
+            req.header.flags = rtnetlink::packet::NLM_F_REQUEST | rtnetlink::packet::NLM_F_ACK;
+            let mut stream = handle.request(req).map_err(map_err)?;
+            while let Some(message) = stream.next().await {
+                if let rtnetlink::packet::NetlinkPayload::Error(err) = message.payload {
+                    return Err(map_err(rtnetlink::Error::NetlinkError(err)));
+                }
+            }
             Ok(true)
         }
         .await;
