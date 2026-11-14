@@ -2,7 +2,7 @@ name: Nix Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, rust-rewrite]
   pull_request:
   workflow_dispatch:
 
@@ -16,7 +16,11 @@ jobs:
     - name: Install Nix
       uses: cachix/install-nix-action@v31
 
-    - name: Run Nix Build
+    - name: Build with Nix
       run: nix build
-    - run: test -x result/bin/radmin-vpn-linux
-    - run: test -f result/share/radmin-vpn-linux/build/rvpnnetmp.sys
+
+    - name: Test build outputs
+      run: |
+        test -x result/bin/radmin-vpn
+        test -f result/lib/systemd/system/radmin-vpn.service
+        test -f result/lib/tmpfiles.d/radmin-vpn.conf

@@ -1,0 +1,12 @@
+[package]
+name = "rvpn-reuseport"
+description = "LD_PRELOAD shim: set SO_REUSEPORT on TCP sockets for wineserver"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "rvpn_reuseport"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"

@@ -2,52 +2,52 @@ name: Build
 
 on:
   push:
+    branches: [main, rust-rewrite]
     tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  build:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build deps
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64 libgtk-4-dev imagemagick file
+          sudo apt-get install -y nftables iproute2 libgtk-4-dev
 
-      - name: Build binaries
-        run: make
+      - name: Rustfmt
+        run: cargo fmt --check
 
-      - name: Build AppImage
-        run: ./packaging/build-appimage.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features
 
-      - name: Upload binaries
+      - name: Tests
+        run: cargo test --all-features
+
+      - name: Release build
+        run: cargo build --release --workspace
+
+      - name: Upload workspace binaries
         uses: actions/upload-artifact@v4
         with:
-          name: radmin-vpn-linux-binaries
+          name: radmin-vpn-linux-release
           path: |
-            build/rvpnnetmp.sys
-            build/adapter_hook.dll
-            build/rvpn_launcher.exe
-            build/netsh.exe
-            build/netsh64.exe
-            build/drvinst.exe
-            build/tap_bridge
-            build/rvpn_filter_ui
-            build/rvpn_dnsfix.so
-            build/rvpn_reuseport.so
-
-      - name: Upload AppImage
-        uses: actions/upload-artifact@v4
-        with:
-          name: radmin-vpn-linux-appimage
-          path: packaging/dist/RadminVPN-Linux-x86_64.AppImage
+            target/release/radmin-vpn
+            target/release/librvpn_dnsfix.so
+            target/release/librvpn_reuseport.so
+            packaging/systemd/radmin-vpn.service
+            packaging/tmpfiles.d/radmin-vpn.conf
 
   release:
-    needs: build
+    needs: rust
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -55,16 +55,22 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: radmin-vpn-linux-binaries
-          path: build/
+          name: radmin-vpn-linux-release
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: radmin-vpn-linux-appimage
-          path: .
-
-      - name: Package tarball
-        run: tar czf radmin-vpn-linux-${{ github.ref_name }}.tar.gz -C build .
+      - name: Create release archive
+        run: |
+          set -e
+          mkdir -p radmin-vpn-linux-${{ github.ref_name }}
+          cp radmin-vpn radmin-vpn-linux-${{ github.ref_name }}/
+          if [ -f librvpn_dnsfix.so ]; then
+            cp librvpn_dnsfix.so radmin-vpn-linux-${{ github.ref_name }}/
+          fi
+          if [ -f librvpn_reuseport.so ]; then
+            cp librvpn_reuseport.so radmin-vpn-linux-${{ github.ref_name }}/
+          fi
+          cp radmin-vpn.service radmin-vpn-linux-${{ github.ref_name }}/ || true
+          cp radmin-vpn.conf radmin-vpn-linux-${{ github.ref_name }}/ || true
+          tar czf radmin-vpn-linux-${{ github.ref_name }}.tar.gz radmin-vpn-linux-${{ github.ref_name }}
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -72,5 +78,4 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             radmin-vpn-linux-${{ github.ref_name }}.tar.gz
-            RadminVPN-Linux-x86_64.AppImage
           generate_release_notes: true

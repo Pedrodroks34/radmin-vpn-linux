@@ -1,37 +1,35 @@
-# Headless and server modes
+# Headless operation
 
-Two extra launchers run Radmin without a local desktop, for a VPS or a datacenter host. They install and configure exactly like `run.sh` (same prefix, same `--installer` first run, same TAP bridge) and only differ in how you reach the GUI.
+Radmin can be run without a local desktop for servers/VPSs.
 
-## `run_datacenter.sh`: the GUI in a browser
+## Service-only mode
 
-Runs the real Radmin GUI on a virtual display (Xvfb) and serves it through VNC and noVNC, so you configure your networks from a browser and leave it running.
-
-```bash
-sudo apt install -y xvfb x11vnc websockify novnc   # or: make install-datacenter-deps
-./run_datacenter.sh --installer ~/Downloads/Radmin_VPN_*.exe
-```
-
-| Option | Default | What it does |
-|---|---|---|
-| `--vnc-port <n>` | `5900` | Port of the x11vnc server. |
-| `--web-port <n>` | `6080` | Port of the noVNC web endpoint. |
-| `--vnc-password <pw>` | none | Password for the VNC and web session. |
-| `--web-bind <addr>` | `127.0.0.1` | Address noVNC listens on. |
-
-noVNC binds to `127.0.0.1` by default, so you reach it through an SSH tunnel:
+Use the systemd service:
 
 ```bash
-ssh -L 6080:localhost:6080 your-vps    # then open http://localhost:6080/vnc.html
+sudo systemctl enable --now radmin-vpn.service
 ```
 
-To expose it publicly, pass `--web-bind 0.0.0.0` together with `--vnc-password`. Without a password, anyone who reaches the port lands on a root-capable desktop; the script warns loudly if you try. Set `NOVNC_PATH` if your noVNC web root is not in a standard location.
+The service starts the TAP adapter, bridge, firewall/routes, and Wine/Radmin processes according to its configuration. Interaction with the Radmin GUI is optional; when `--no-ui` is set, no desktop session is required. When a graphical session exists, the service injects its `DISPLAY`/`XAUTHORITY` into Wine processes so the desktop and the GUI work normally; see [installation.md](installation.md#graphical-session-and-the-radmin-gui).
 
-## `run_vps.sh`: service only
+Example unit command line:
 
-Starts the service with a hardcoded TAP GUID (no Wine WMI needed) and no GUI at all. If a network enumerator `rv_net_enum.exe` (not shipped here) sits one directory up, it is launched; otherwise the service runs until Ctrl+C. Only `--installer` is accepted.
-
-```bash
-./run_vps.sh --installer ~/Downloads/Radmin_VPN_*.exe
+```ini
+ExecStart=/usr/local/bin/radmin-vpn --json-logs service --no-ui
 ```
 
-Neither launcher opens the host firewall the way `run.sh` does: on a server you manage that yourself.
+## GUI in a browser (manual)
+
+If you want the real GUI remotely, run it under a virtual framebuffer and expose it with VNC/noVNC. This is outside the scope of the built-in service, but the same Wine prefix and TAP adapter are used.
+
+Minimal flow:
+
+1. Start the service with `--no-ui` or with the GUI enabled on a virtual display.
+2. Expose the display via `x11vnc` and noVNC as desired.
+3. Tunnel or bind appropriately with firewall rules.
+
+## Notes
+
+- The service manages TAP routes/firewall state and must be stopped cleanly.
+- Running as root is required for TAP, routing, and firewall configuration.
+- See [systemd.md](systemd.md) for hardening guidance and [installation.md](installation.md) for distro-specific steps.

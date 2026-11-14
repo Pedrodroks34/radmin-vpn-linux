@@ -1,0 +1,45 @@
+[Unit]
+Description=Radmin VPN service (Rust, TAP owner)
+Documentation=https://github.com/ntvmb/radmin-vpn-linux
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/dev/net/tun
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=pedrodroks
+Group=pedrodroks
+ExecStartPre=/usr/bin/test -c /dev/net/tun
+ExecStart=/usr/bin/radmin-vpn --json-logs service
+ExecReload=/bin/kill -s SIGHUP $MAINPID
+ExecStop=/usr/bin/radmin-vpn teardown --tap-dev radminvpn0
+ExecStopPost=/usr/bin/radmin-vpn teardown --tap-dev radminvpn0 --remove-tap
+Restart=always
+RestartSec=2
+TimeoutStartSec=30
+TimeoutStopSec=20
+RuntimeDirectory=radmin-vpn
+RuntimeDirectoryMode=0750
+StateDirectory=radmin-vpn
+StateDirectoryMode=0750
+Environment=RVPN_BUILD_DIR=/usr/lib/radmin-vpn
+
+# Least privilege: run as the unprivileged user and only retain the
+# capabilities needed for TAP, routing and firewall management.
+NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+DeviceAllow=/dev/net/tun rwm
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+ProtectSystem=full
+ProtectHome=false
+PrivateTmp=false
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

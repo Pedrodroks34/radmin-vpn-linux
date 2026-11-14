@@ -1,8 +1,8 @@
 # Wine gap: four missing perflib V2 exports
 
-This is the upstream note for the workaround in `src/adapter_hook.c`
-(`perf_fill_in`). It documents a Wine gap, not a Radmin bug — the day Wine ships
-the four exports, the workaround becomes dead code.
+This is the upstream note for the workaround that was implemented in the legacy hook
+(`src/adapter_hook.c` before removal). It documents a Wine gap, not a Radmin bug —
+the day Wine ships the four exports, the workaround becomes dead code and can be removed.
 
 ## The gap
 
@@ -70,12 +70,14 @@ locates, so the existing counter lookup can be reused directly.
 
 ## The workaround here
 
-`hook_GetProcAddress` in `src/adapter_hook.c` answers those four names — and only
-those four, and only when Wine itself returns NULL — with no-op stubs returning
+In the legacy implementation, `hook_GetProcAddress` answered those four names — and only
+those four, and only when Wine itself returned NULL — with no-op stubs returning
 `ERROR_SUCCESS`. The counters then read zero, which nothing on the data path
-consumes; only the existence of the counterset object matters.
+consumes; only the existence of the counterset object mattered.
 
-Note the two stubs are not interchangeable: the `ULongLong` variants take a
+In the Rust rewrite, the equivalent behavior is handled through Wine registry/DLL overrides and the scoped `LD_PRELOAD` shims (`rvpn_dnsfix`, `rvpn_reuseport`) plus the service startup ordering. The four-name rule remains the same constraint: never change Wine's perflib exports semantics; only satisfy the lookup path used by Famatech's counterset cascade.
+
+Note the two stubs were not interchangeable: the `ULongLong` variants take a
 64-bit value and therefore pop 20 bytes instead of 16. Both are `__stdcall` with
 four arguments, verified against the call sites at `RvControlSvc.exe+0x4826a6`
 and `+0x4824c9`.

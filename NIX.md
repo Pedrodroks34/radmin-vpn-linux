@@ -1,27 +1,21 @@
 # NixOS installation and development guide
 
-This project supports NixOS out of the box using **Nix Flakes**.
+This project provides a Nix flake for building the Rust `radmin-vpn` binary and packaging the systemd unit.
 
-The packaged derivation automatically isolates the required Wine environment into `${XDG_DATA_HOME:-~/.local/share}/radmin-vpn-linux/wineprefix` (the same prefix the AppImage uses) to prevent any interference with your system or personal Wine configurations.
+## Temporary install / try it
 
-## Temporary installing or testing
-
-You can execute this project directly from GitHub, without cloning the repository:
 ```bash
 nix run github:baptisterajaut/radmin-vpn-linux
 ```
 
-## Declarative installing
+## Declarative install
 
-To add Radmin VPN to your NixOS system configuration:
-
-### 1. Add to your `flake.nix`:
+Add the flake to your system configuration:
 
 ```nix
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs"; # or your release of nixpkgs
-
+    nixpkgs.url = "github:NixOS/nixpkgs";
     radmin-vpn-linux.url = "github:baptisterajaut/radmin-vpn-linux";
   };
 
@@ -29,66 +23,51 @@ To add Radmin VPN to your NixOS system configuration:
     nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
       modules = [
         { nixpkgs.overlays = [ radmin-vpn-linux.overlays.default ]; }
-
-        # your other modules, like configuration.nix, etc.
       ];
     };
   };
 }
 ```
 
-### 2. Add package to your environment:
-
-In your configuration file (e.g., `configuration.nix` or `packages.nix`):
+Then add the package:
 
 ```nix
 { pkgs, ... }:
-
 {
-  environment.systemPackages = with pkgs; [
-    radmin-vpn-linux
-  ];
+  environment.systemPackages = with pkgs; [ radmin-vpn ];
 }
 ```
 
-### 3. Rebuild:
+Rebuild with:
 
 ```bash
 sudo nixos-rebuild switch --flake .
 ```
 
-And you're done!
-
 ## Usage
 
-`radmin-vpn-linux` is equal to `run.sh`
+The flake builds and installs the Rust `radmin-vpn` binary.
 
-`radmin-vpn-vps` is equal to `run_vps.sh`
+```bash
+radmin-vpn --json-logs service
+```
 
-`radmin-vpn-datacenter` is equal to `run_datacenter.sh`
+For a proper systemd-managed deployment, install/enable the bundled `radmin-vpn.service` unit. See [docs/installation.md](docs/installation.md) and [docs/systemd.md](docs/systemd.md).
 
-
-Everything else is the same!
-
-## Entering a development shell and building a package
-
-### 1. Clone repository:
+## Development shell
 
 ```bash
 git clone https://github.com/baptisterajaut/radmin-vpn-linux.git
 cd radmin-vpn-linux
-```
-
-### 2. Entering a development shell:
-
-```bash
 nix develop
 ```
 
-### 3. Building a package:
+The dev shell provides Rust/cargo and the runtime dependencies needed for development. Build the workspace with:
 
 ```bash
-nix build
+cargo build --release --workspace
 ```
 
-You will get `result` directory that is symlink to /nix/store path of the built package.
+## Note
+
+The Rust rewrite is the maintained implementation. Legacy AppImage/shell packaging was removed; use the systemd unit and `make install`/`docs/installation.md` guidance instead.

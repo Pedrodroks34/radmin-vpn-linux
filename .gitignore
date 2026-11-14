@@ -1,3 +1,7 @@
+# Rust
+/target/
+**/*.rs.bk
+
 # Build artifacts
 build/
 packaging/dist/
@@ -11,11 +15,6 @@ result-*
 *.sys
 *.dll
 *.exe
-!src/*.c
-
-# Native binaries
-tap_bridge
-rvpn_filter_ui
 
 # Wine prefix
 wineprefix/

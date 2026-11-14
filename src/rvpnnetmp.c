@@ -1,44 +1,22 @@
-/*
- * rvpnnetmp.sys - Wine kernel driver shim for Radmin VPN
- *
- * Creates \Device\RVPNNETMP and \DosDevices\RVPNNETMP so that
- * RvControlSvc.exe can open \\.\RVPNNETMP and exchange ethernet
- * frames.  Relays frames to/from the Linux TAP device via two FIFOs
- * managed by the companion tap_bridge process.
- *
- * Frame format (mode >= 2, set by SETUP IOCTL):
- *   Service Read/Write: [u32 dest_mac_prefix][u32 frame_len][frame_data]...
- *   FIFO (bridge):      [u16 frame_len][frame_data]
- *
- * FIFOs:
- *   Z:\tmp\rvpn_b2d — bridge-to-driver: incoming frames (TAP → service)
- *   Z:\tmp\rvpn_d2b — driver-to-bridge: outgoing frames (service → TAP)
- *
- * Build (64-bit PE for Wine):
- *   x86_64-w64-mingw32-gcc -shared -o rvpnnetmp.sys rvpnnetmp.c \
- *       -I/usr/x86_64-w64-mingw32/include/ddk \
- *       -lntoskrnl -lhal -nostdlib \
- *       -Wl,--subsystem,native -Wl,--entry,DriverEntry
- */
+
 
 #include <ntddk.h>
 
 #define DEVICE_NAME     L"\\Device\\RVPNNETMP"
 #define DOSDEVICE_NAME  L"\\DosDevices\\RVPNNETMP"
 
-/* FIFO paths (Wine Z: drive maps to /) */
+
 #define FIFO_B2D_PATH       L"\\??\\Z:\\tmp\\rvpn_b2d"
 #define FIFO_D2B_PATH       L"\\??\\Z:\\tmp\\rvpn_d2b"
 #define FIFO_D2B_HIGH_PATH  L"\\??\\Z:\\tmp\\rvpn_d2b_high"
 #define FIFO_D2B_LOW_PATH   L"\\??\\Z:\\tmp\\rvpn_d2b_low"
 
-/* Adapter MAC — loaded from /tmp/rvpn_mac (6 raw bytes, written by run.sh).
- * Must match the TAP device MAC. Falls back to a default if file missing. */
+
 #define MAC_FILE_PATH L"\\??\\Z:\\tmp\\rvpn_mac"
 static UCHAR g_adapter_mac[6] = { 0x02, 0x50, 0xDE, 0xAD, 0xBE, 0xEF };
 static BOOLEAN g_mac_loaded = FALSE;
 
-/* Minimum ethernet frame size for TLV padding */
+
 #define ETH_FRAME_MIN 60
 
 typedef struct _DEVICE_EXTENSION {
@@ -46,17 +24,17 @@ typedef struct _DEVICE_EXTENSION {
     UCHAR   MacAddress[6];
     LONG    IoctlCount;
     LONG    StatusCount;
-    ULONG   SetupMode;       /* Set by SETUP IOCTL (0x22801c), controls TLV format */
-    HANDLE  FifoB2D;         /* bridge→driver (read incoming frames) */
-    HANDLE  FifoD2B;         /* legacy single pipe — kept unused for compat */
-    HANDLE  FifoD2B_High;    /* driver→bridge high priority (TCP/ICMP/unicast UDP) */
-    HANDLE  FifoD2B_Low;     /* driver→bridge low priority (broadcast/multicast/rest) */
+    ULONG   SetupMode;       
+    HANDLE  FifoB2D;         
+    HANDLE  FifoD2B;         
+    HANDLE  FifoD2B_High;    
+    HANDLE  FifoD2B_Low;     
 } DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
-/* Forward decl — we need the device object in the RX thread for TLV encoding */
+
 static PDEVICE_OBJECT g_DeviceObject = NULL;
 
-/* ============ Logging (buffered) ============ */
+
 
 #define LOG_BUF_SIZE 4096
 
@@ -66,7 +44,7 @@ static CHAR    g_log_buf[LOG_BUF_SIZE];
 static ULONG   g_log_buf_pos = 0;
 static ULONG   g_log_call_count = 0;
 
-/* Flush buffered log data to disk. Caller must hold g_log_lock. */
+
 static void drv_log_flush_locked(void)
 {
     if (!g_log_file || g_log_buf_pos == 0)
@@ -90,7 +68,7 @@ static void drv_log(const char *msg)
     KIRQL oldIrql;
     KeAcquireSpinLock(&g_log_lock, &oldIrql);
 
-    /* Flush first if this message (+ CRLF) would overflow the buffer */
+    
     if (g_log_buf_pos + msgLen + 2 > LOG_BUF_SIZE)
         drv_log_flush_locked();
 
@@ -99,9 +77,7 @@ static void drv_log(const char *msg)
     RtlCopyMemory(g_log_buf + g_log_buf_pos, "\r\n", 2);
     g_log_buf_pos += 2;
 
-    /* Flush every 8 calls so data reaches disk even if we crash before the
-     * buffer fills.  Keeping a counter avoids a ZwWriteFile on every call
-     * while still giving good coverage for a 4 KB buffer. */
+    
     if (++g_log_call_count % 8 == 0)
         drv_log_flush_locked();
 
@@ -142,7 +118,7 @@ static void drv_log_ioctl(ULONG code, ULONG inLen, ULONG outLen, const UCHAR *da
     drv_log(buf);
 }
 
-/* ============ FIFO helpers ============ */
+
 
 static HANDLE open_fifo(const WCHAR *path, ACCESS_MASK access)
 {
@@ -168,58 +144,47 @@ static HANDLE open_fifo(const WCHAR *path, ACCESS_MASK access)
     return h;
 }
 
-/* ============ ICMP detection helper ============
- * Returns 1 if the raw ethernet frame is IPv4 ICMP (ethertype 0x0800, proto 1).
- * frame must be at least 34 bytes (14 eth + 20 IP minimum). */
+
 static int is_ipv4_icmp(const UCHAR *frame, USHORT len)
 {
     if (len < 34) return 0;
-    /* Ethertype at offset 12-13 (big-endian): 0x0800 = IPv4 */
+    
     if (frame[12] != 0x08 || frame[13] != 0x00) return 0;
-    /* IP protocol at offset 23: 1 = ICMP */
+    
     return (frame[23] == 1);
 }
 
-/* ============ Dual-priority FIFO classifier ============
- * Classify an outgoing ethernet frame for driver→bridge priority.
- * Returns 1 for high priority (TCP, ICMP, unicast UDP), 0 for low
- * priority (broadcasts, multicasts, non-IP, unknown).
- *
- * High priority classification:
- *   IPv4: TCP(6), ICMP(1), unicast UDP(17)
- *   IPv6: TCP(6), ICMPv6(58), unicast UDP(17)
- * Everything else → low priority.
- */
+
 static int classify_high_priority(const UCHAR *frame, USHORT len)
 {
     if (len < 14) return 0;
 
     USHORT ethertype = ((USHORT)frame[12] << 8) | frame[13];
 
-    /* ARP is critical for reachability; keep it out of the broadcast queue. */
+    
     if (ethertype == 0x0806)
         return 1;
 
     if (ethertype == 0x0800) {
-        /* IPv4: need eth + 20-byte IP header to read protocol */
+        
         if (len < 34) return 0;
         UCHAR proto = frame[23];
         if (proto == 6 || proto == 1) {
-            return 1;  /* TCP or ICMP → high */
+            return 1;  
         }
         if (proto == 17) {
-            /* Unicast UDP: dst MAC group bit cleared */
+            
             return !(frame[0] & 0x01);
         }
         return 0;
     }
 
     if (ethertype == 0x86dd) {
-        /* IPv6: need eth + 40-byte IPv6 header to read next header */
+        
         if (len < 54) return 0;
-        UCHAR proto = frame[20];  /* next header at eth[14] + ipv6[6] */
+        UCHAR proto = frame[20];  
         if (proto == 6 || proto == 58) {
-            return 1;  /* TCP or ICMPv6 → high */
+            return 1;  
         }
         if (proto == 17) {
             return !(frame[0] & 0x01);
@@ -227,17 +192,15 @@ static int classify_high_priority(const UCHAR *frame, USHORT len)
         return 0;
     }
 
-    return 0;  /* non-IP or ARP → low priority */
+    return 0;  
 }
 
-static volatile LONG g_icmp_rx = 0;   /* TAP → service (outbound ICMP) */
-static volatile LONG g_icmp_tx = 0;   /* service → TAP (inbound ICMP) */
+static volatile LONG g_icmp_rx = 0;   
+static volatile LONG g_icmp_tx = 0;   
 
-/* ============ RX ring buffer + pending IRP ============ */
 
-/* RX_RING is a fallback used only when no overlapped ReadFile IRP is pending.
- * In steady state with a running service every frame is delivered via IRP, so
- * the ring is almost always empty — 16 slots (~26 KB) is more than enough. */
+
+
 #define RX_RING_SIZE 16
 #define RX_FRAME_MAX 1600
 
@@ -252,37 +215,23 @@ typedef struct _RX_RING {
 
 static RX_RING g_rx_ring;
 
-/* ============ IRP queue (replaces single pending IRP slot) ============
- * The service issues overlapped ReadFile calls. Each creates an IRP.
- * We queue them FIFO. When a frame arrives, the RX thread dequeues
- * the oldest IRP and completes it with TLV data. Wine delivers the
- * completion to the correct ReadFile caller. This is what the real
- * NDIS miniport driver does (confirmed from RE of NetMP60_1_1_64.sys). */
+
 
 #define IRP_QUEUE_SIZE 1024
 
 static struct {
     KSPIN_LOCK Lock;
     PIRP       Irps[IRP_QUEUE_SIZE];
-    LONG       Head;   /* dequeue from here (oldest) */
-    LONG       Tail;   /* enqueue here (newest) */
+    LONG       Head;   
+    LONG       Tail;   
     LONG       Count;
-    PFILE_OBJECT FileObjs[IRP_QUEUE_SIZE]; /* parallel to Irps[] */
+    PFILE_OBJECT FileObjs[IRP_QUEUE_SIZE]; 
 } g_irp_queue;
 
-/* Per-handle peer MAC routing table.
- * IOCTL_RVPN_PEERMAC associates a MAC with the calling FILE_OBJECT.
- * The RX thread uses this to route frames to the right handle.
- *
- * Dynamically grown: starts at PEER_ROUTES_INITIAL, doubles up to
- * PEER_ROUTES_MAX when saturated. Keeps the baseline kernel footprint
- * small instead of reserving a worst-case 1024-slot table for every
- * session. Allocated via NonPagedPool so RX-thread lookups stay legal
- * at DISPATCH_LEVEL; growth is done outside the spinlock and committed
- * by an atomic pointer swap. */
+
 #define PEER_ROUTES_INITIAL 16
 #define PEER_ROUTES_MAX     4096
-#define PEER_ROUTES_TAG     'rPvR'  /* "RvPr" backwards: pool tags are printed LE */
+#define PEER_ROUTES_TAG     'rPvR'  
 
 typedef struct _PEER_ROUTE {
     PFILE_OBJECT fo;
@@ -290,56 +239,38 @@ typedef struct _PEER_ROUTE {
 } PEER_ROUTE;
 
 static PEER_ROUTE *g_peer_routes = NULL;
-static LONG        g_peer_routes_capacity = 0;  /* protected by g_irp_queue.Lock */
+static LONG        g_peer_routes_capacity = 0;  
 static volatile LONG g_peer_route_count = 0;
 
-/* Diagnostic counters */
+
 static volatile LONG g_ring_enqueued = 0;
 static volatile LONG g_ring_consumed = 0;
 static volatile LONG g_ring_dropped  = 0;
-/* Observability counters. With the cancel-safe-queue mechanism (see
- * RvpnCancelRoutine) these are benign, not bug indicators:
- *  - g_rx_cancel_ceded:  a dequeuer (RX thread / cleanup / drop) found the
- *    cancel routine had already claimed the IRP and correctly ceded ownership.
- *  - g_irp_cancelled:    IRPs completed as STATUS_CANCELLED by the cancel routine.
- *  - g_queue_full_drops: IRP queue hit capacity and the oldest was dropped. */
+
 static volatile LONG g_rx_cancel_ceded  = 0;
 static volatile LONG g_irp_cancelled    = 0;
 static volatile LONG g_queue_full_drops = 0;
 static volatile LONG g_irp_completed    = 0;
 
-/* Scratch buffers for queue compaction. Always accessed while holding
- * g_irp_queue.Lock — that serialization makes file-scope `static` safe
- * across the RX thread's broadcast/unicast paths and DispatchCleanup.
- * Kept off the stack because mingw inserts ___chkstk_ms for >4KB frames,
- * which the kernel link doesn't resolve. */
+
 static PIRP         g_compact_keep_irps[IRP_QUEUE_SIZE];
 static PFILE_OBJECT g_compact_keep_fos[IRP_QUEUE_SIZE];
 static PIRP         g_compact_picked[IRP_QUEUE_SIZE];
 static PFILE_OBJECT g_compact_seen[IRP_QUEUE_SIZE];
 
-/* ============ TLV encoding for Read path ============
- *
- * Mode 3: [u32 dest_mac_prefix][u32 frame_len][frame_data (min 60, zero-padded)]
- * The dest_mac_prefix is the first 4 bytes of the frame's destination MAC.
- *
- * Returns total bytes written to outBuf.
- */
+
 static ULONG tlv_encode_frame(PUCHAR outBuf, ULONG bufRemain, const UCHAR *frame, USHORT frameLen, ULONG setupMode)
 {
     ULONG paddedLen = (frameLen < ETH_FRAME_MIN) ? ETH_FRAME_MIN : (ULONG)frameLen;
-    ULONG headerSize = (setupMode >= 2) ? 8 : 4;  /* mac_prefix(4) + len(4) or just len(4) */
+    ULONG headerSize = (setupMode >= 2) ? 8 : 4;  
     ULONG needed = headerSize + paddedLen;
 
     if (needed > bufRemain)
-        return 0;  /* doesn't fit */
+        return 0;  
 
     ULONG pos = 0;
 
-    /* Mode >= 2: prepend 4-byte dest MAC prefix in host byte order.
-     * The real driver byte-swaps (ntohl) the first 4 bytes of the destination MAC.
-     * The service compares this against registered peer MACs stored as host-order u32s.
-     * Without the swap, unicast frames don't match any peer → silently dropped. */
+    
     if (setupMode >= 2) {
         ULONG macPrefix = 0;
         if (frameLen >= 4) {
@@ -349,7 +280,7 @@ static ULONG tlv_encode_frame(PUCHAR outBuf, ULONG bufRemain, const UCHAR *frame
                         ((raw >> 8) & 0xff00) | (raw >> 24);
         }
         RtlCopyMemory(outBuf + pos, &macPrefix, 4);
-        /* Log first 3 READ mac_prefix values for comparison with WRITE */
+        
         {
             static LONG rd_mac_log = 0;
             if (InterlockedIncrement(&rd_mac_log) <= 3) {
@@ -361,7 +292,7 @@ static ULONG tlv_encode_frame(PUCHAR outBuf, ULONG bufRemain, const UCHAR *frame
                     buf[7 + j*2] = hx4[(mb[j] >> 4) & 0xf];
                     buf[8 + j*2] = hx4[mb[j] & 0xf];
                 }
-                /* Also show raw dst MAC bytes */
+                
                 buf[15] = ' '; buf[16] = 'd'; buf[17] = 's'; buf[18] = 't'; buf[19] = '=';
                 for (j = 0; j < 6 && j < frameLen; j++) {
                     buf[20 + j*2] = hx4[(frame[j] >> 4) & 0xf];
@@ -374,15 +305,15 @@ static ULONG tlv_encode_frame(PUCHAR outBuf, ULONG bufRemain, const UCHAR *frame
         pos += 4;
     }
 
-    /* Frame length (u32 LE) */
+    
     RtlCopyMemory(outBuf + pos, &paddedLen, 4);
     pos += 4;
 
-    /* Frame data */
+    
     RtlCopyMemory(outBuf + pos, frame, frameLen);
     pos += frameLen;
 
-    /* Zero-pad to minimum 60 bytes */
+    
     if (frameLen < ETH_FRAME_MIN) {
         RtlZeroMemory(outBuf + pos, ETH_FRAME_MIN - frameLen);
         pos += (ETH_FRAME_MIN - frameLen);
@@ -391,7 +322,7 @@ static ULONG tlv_encode_frame(PUCHAR outBuf, ULONG bufRemain, const UCHAR *frame
     return pos;
 }
 
-/* Complete a Read IRP with one frame, TLV-encoded */
+
 static void complete_read_irp(PIRP irp, const UCHAR *frame, USHORT frameLen)
 {
     PUCHAR outBuf = NULL;
@@ -408,7 +339,7 @@ static void complete_read_irp(PIRP irp, const UCHAR *frame, USHORT frameLen)
     PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(irp);
     ULONG bufLen = irpSp->Parameters.Read.Length;
 
-    /* Get setup mode */
+    
     ULONG mode = 0;
     if (g_DeviceObject) {
         PDEVICE_EXTENSION ext = (PDEVICE_EXTENSION)g_DeviceObject->DeviceExtension;
@@ -422,15 +353,9 @@ static void complete_read_irp(PIRP irp, const UCHAR *frame, USHORT frameLen)
     IoCompleteRequest(irp, IO_NO_INCREMENT);
 }
 
-/* ============ RX thread ============ */
 
-/* Read exactly n bytes from the FIFO, looping over partial reads.
- * The FIFO is a blocking pipe: a single read() returns as soon as >=1 byte is
- * available, NOT the full count — so under high packet influx a lone ZwReadFile
- * routinely comes back short. Treating that as fatal (the old code did) killed
- * the RX thread and left RvControlSvc waiting on overlapped reads that never
- * complete ("service online but loses the driver"). Loop until all n bytes are
- * in; only a hard error or writer-closed (0 bytes) ends the stream. */
+
+
 static NTSTATUS fifo_read_exact(HANDLE fifo, void *buf, ULONG n)
 {
     IO_STATUS_BLOCK iosb;
@@ -439,35 +364,15 @@ static NTSTATUS fifo_read_exact(HANDLE fifo, void *buf, ULONG n)
         NTSTATUS st = ZwReadFile(fifo, NULL, NULL, NULL, &iosb,
                                  (UCHAR *)buf + got, n - got, NULL, NULL);
         if (!NT_SUCCESS(st)) return st;
-        if (iosb.Information == 0) return STATUS_END_OF_FILE;  /* writer closed */
+        if (iosb.Information == 0) return STATUS_END_OF_FILE;  
         got += (ULONG)iosb.Information;
     }
     return STATUS_SUCCESS;
 }
 
-/* ============ Cancel-safe IRP queue ============
- *
- * Every queued Read IRP carries a cancel routine (armed in DispatchRead). When
- * Wine cancels an IRP — on CancelIoEx, on the service closing a per-peer handle,
- * or on abrupt process exit — the I/O manager atomically clears Irp->CancelRoutine
- * and invokes RvpnCancelRoutine, which removes the IRP from the queue and
- * completes it as STATUS_CANCELLED. (Verified on Wine 11.x: the routine fires in
- * all three cases, Irp->CancelRoutine is NULL on entry, and IoSetCancelRoutine
- * returns the previously-armed routine — the exchange semantics the handshake
- * below relies on.)
- *
- * Ownership of a given IRP is decided by a single atomic exchange of
- * Irp->CancelRoutine:
- *   - the I/O manager wins  -> RvpnCancelRoutine completes the IRP;
- *   - a dequeuer wins (IoSetCancelRoutine(irp, NULL) returns non-NULL via
- *     rx_claim_irp)         -> that dequeuer completes the IRP.
- * Exactly one side ever completes a given IRP, so the double-completion UAF the
- * old Irp->Cancel polling was prone to (freed IRP recycled into the service's
- * STATUS poll -> spurious FALSE -> "adapter removed" storm) cannot happen. */
 
-/* Remove a specific IRP from the queue (compacting). Caller holds the queue
- * lock. Uses the shared g_compact_keep_* scratch, safe because the lock
- * serializes every compaction path. Returns TRUE if the IRP was present. */
+
+
 static BOOLEAN dequeue_specific_irp_locked(PIRP irp)
 {
     LONG keep_n = 0;
@@ -494,24 +399,19 @@ static BOOLEAN dequeue_specific_irp_locked(PIRP irp)
     return found;
 }
 
-/* Cancel routine: the I/O manager calls this (global cancel spinlock held, and
- * Irp->CancelRoutine already NULL'd) when it cancels a queued Read IRP. */
+
 static VOID NTAPI RvpnCancelRoutine(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     (void)DeviceObject;
-    /* Release the global cancel spinlock before taking our private queue lock;
-     * the two are never nested (dequeuers only ever hold the queue lock, and
-     * detach via a lock-free IoSetCancelRoutine), so there is no lock-order
-     * inversion. */
+    
     IoReleaseCancelSpinLock(Irp->CancelIrql);
 
     KIRQL oldIrql;
     KeAcquireSpinLock(&g_irp_queue.Lock, &oldIrql);
-    dequeue_specific_irp_locked(Irp);   /* remove if still queued */
+    dequeue_specific_irp_locked(Irp);   
     KeReleaseSpinLock(&g_irp_queue.Lock, oldIrql);
 
-    /* We own this IRP: the I/O manager only reaches here after atomically
-     * clearing CancelRoutine, so no dequeuer can also claim it. */
+    
     Irp->IoStatus.Status = STATUS_CANCELLED;
     Irp->IoStatus.Information = 0;
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
@@ -525,10 +425,7 @@ static VOID NTAPI RvpnCancelRoutine(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     }
 }
 
-/* Called by a dequeuer (RX thread / cleanup / queue-full drop / unload) that
- * has pulled an IRP off the queue and wants to complete it. Detaches the cancel
- * routine; returns TRUE if this caller now owns completion, FALSE if the cancel
- * routine already claimed the IRP (it will complete it — the caller must skip). */
+
 static BOOLEAN rx_claim_irp(PIRP irp)
 {
     if (IoSetCancelRoutine(irp, NULL) != NULL)
@@ -585,9 +482,7 @@ static void __stdcall rx_thread_proc(PVOID context)
 
         rx_count++;
 
-        /* Log ICMP frames from TAP (outbound). Rate-limited: first 3, then
-         * every 100th — per-frame logging filled the prefix's drive over
-         * long sessions. Counter still increments unconditionally. */
+        
         if (is_ipv4_icmp(frameBuf, frameLen)) {
             LONG n = InterlockedIncrement(&g_icmp_rx);
             if (n <= 3 || (n % 100) == 0) {
@@ -600,21 +495,15 @@ static void __stdcall rx_thread_proc(PVOID context)
             }
         }
 
-        /* Route frame to the correct handle based on dest MAC.
-         * PEERMAC IOCTL registered which FILE_OBJECT handles which MAC.
-         * Group-addressed frames (broadcast FF:..:FF and any IPv4/IPv6
-         * multicast — bit 0 of the first MAC byte is the group bit) go to
-         * one IRP per handle. */
+        
         {
             KIRQL oldIrql;
             KeAcquireSpinLock(&g_irp_queue.Lock, &oldIrql);
             if (g_irp_queue.Count > 0) {
-                UCHAR *dstMac = frameBuf;  /* first 6 bytes = ethernet dest MAC */
+                UCHAR *dstMac = frameBuf;  
                 int is_group = (frameLen >= 1 && (dstMac[0] & 0x01));
 
-                /* Find the right FILE_OBJECT for unicast.
-                 * Slots with fo == NULL were released by DispatchClose and
-                 * will be reused by the next PEERMAC; skip them here. */
+                
                 PFILE_OBJECT target_fo = NULL;
                 if (!is_group && frameLen >= 6 && g_peer_routes) {
                     LONG rc = g_peer_route_count;
@@ -629,11 +518,7 @@ static void __stdcall rx_thread_proc(PVOID context)
                 }
 
                 if (is_group) {
-                    /* Group address: deliver to one IRP per unique FILE_OBJECT.
-                     * Two-pass partition into picked[] (to be completed) and
-                     * keep_*[] (to be re-installed) avoids the read-then-write
-                     * aliasing that the in-place compaction had when Head != 0
-                     * and the circular index wrapped past freshly written slots. */
+                    
                     LONG picked_n = 0;
                     LONG seen_n = 0;
                     LONG keep_n = 0;
@@ -659,25 +544,20 @@ static void __stdcall rx_thread_proc(PVOID context)
                         g_irp_queue.FileObjs[i] = g_compact_keep_fos[i];
                     }
                     g_irp_queue.Head  = 0;
-                    g_irp_queue.Tail  = keep_n % IRP_QUEUE_SIZE;  /* wrap: keep_n can == IRP_QUEUE_SIZE */
+                    g_irp_queue.Tail  = keep_n % IRP_QUEUE_SIZE;  
                     g_irp_queue.Count = keep_n;
                     KeReleaseSpinLock(&g_irp_queue.Lock, oldIrql);
 
-                    /* Safe to read g_compact_picked[] without the lock here:
-                     * only the RX thread (single instance) writes it, and we
-                     * don't loop back to ZwReadFile until completion is done. */
+                    
                     for (LONG i = 0; i < picked_n; i++) {
-                        /* Claim ownership before completing; if the cancel
-                         * routine already took it, skip — it will complete it. */
+                        
                         if (rx_claim_irp(g_compact_picked[i])) {
                             complete_read_irp(g_compact_picked[i], frameBuf, frameLen);
                             InterlockedIncrement(&g_irp_completed);
                         }
                     }
                 } else if (target_fo) {
-                    /* Unicast: find first IRP from matching FILE_OBJECT.
-                     * Same two-pass partition so we never read a slot that
-                     * a previous iteration already overwrote. */
+                    
                     PIRP found = NULL;
                     LONG keep_n = 0;
                     for (LONG i = 0; i < g_irp_queue.Count; i++) {
@@ -695,7 +575,7 @@ static void __stdcall rx_thread_proc(PVOID context)
                         g_irp_queue.FileObjs[i] = g_compact_keep_fos[i];
                     }
                     g_irp_queue.Head  = 0;
-                    g_irp_queue.Tail  = keep_n % IRP_QUEUE_SIZE;  /* wrap: keep_n can == IRP_QUEUE_SIZE */
+                    g_irp_queue.Tail  = keep_n % IRP_QUEUE_SIZE;  
                     g_irp_queue.Count = keep_n;
                     KeReleaseSpinLock(&g_irp_queue.Lock, oldIrql);
 
@@ -710,7 +590,7 @@ static void __stdcall rx_thread_proc(PVOID context)
                             drv_log("RX unicast no IRP");
                     }
                 } else {
-                    /* No route — drop */
+                    
                     static LONG ndrop = 0;
                     if (InterlockedIncrement(&ndrop) <= 3)
                         drv_log("RX no route");
@@ -721,7 +601,7 @@ static void __stdcall rx_thread_proc(PVOID context)
             KeReleaseSpinLock(&g_irp_queue.Lock, oldIrql);
         }
 
-        /* No pending IRP — fall back to ring buffer */
+        
         ULONG widx = g_rx_ring.write_idx;
         ULONG ridx = g_rx_ring.read_idx;
         if (widx - ridx >= RX_RING_SIZE) {
@@ -739,7 +619,7 @@ static void __stdcall rx_thread_proc(PVOID context)
         InterlockedIncrement(&g_ring_enqueued);
     }
 
-    /* Log diagnostic counters at exit */
+    
     {
         char buf[160] = "RX stats: irp=";
         hex32(buf + 14, (ULONG)g_irp_completed);
@@ -768,7 +648,7 @@ static void __stdcall rx_thread_proc(PVOID context)
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
-/* ============ Dispatch routines ============ */
+
 
 static void load_adapter_mac(void)
 {
@@ -841,9 +721,7 @@ static NTSTATUS NTAPI DispatchClose(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     (void)DeviceObject;
 
-    /* Release peer-route slots owned by the closing FILE_OBJECT.
-     * Without this the table monotonically grew and would saturate even
-     * with a modest peer count if clients reconnected. */
+    
     PIO_STACK_LOCATION sp = IoGetCurrentIrpStackLocation(Irp);
     PFILE_OBJECT fo = sp->FileObject;
     if (fo) {
@@ -879,23 +757,14 @@ static NTSTATUS NTAPI DispatchClose(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     return STATUS_SUCCESS;
 }
 
-/* DispatchCleanup — fired by the I/O manager when the last user-mode
- * handle to a FILE_OBJECT is closed, BEFORE DispatchClose. Queued IRPs now
- * carry a cancel routine, so Wine usually cancels a closing handle's pending
- * Reads (via RvpnCancelRoutine) before this runs. This pass is the
- * belt-and-braces sweep for any IRP of the FILE_OBJECT the cancel routine
- * didn't already claim, so none can linger in g_irp_queue and later be
- * completed against a torn-down FILE_OBJECT. Ownership is arbitrated by
- * rx_claim_irp, so there is no double completion. */
+
 static NTSTATUS NTAPI DispatchCleanup(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     (void)DeviceObject;
     PIO_STACK_LOCATION sp = IoGetCurrentIrpStackLocation(Irp);
     PFILE_OBJECT fo = sp->FileObject;
 
-    /* Local cancel list lives on the stack (~2 KB) — well under the
-     * mingw chkstk threshold and avoids racing with the RX thread on
-     * the shared g_compact_picked[] static. */
+    
     PIRP cancel_local[IRP_QUEUE_SIZE];
     LONG cancel_n = 0;
 
@@ -920,7 +789,7 @@ static NTSTATUS NTAPI DispatchCleanup(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             g_irp_queue.FileObjs[i] = g_compact_keep_fos[i];
         }
         g_irp_queue.Head  = 0;
-        g_irp_queue.Tail  = keep_n % IRP_QUEUE_SIZE;  /* wrap: keep_n can == IRP_QUEUE_SIZE */
+        g_irp_queue.Tail  = keep_n % IRP_QUEUE_SIZE;  
         g_irp_queue.Count = keep_n;
 
         KeReleaseSpinLock(&g_irp_queue.Lock, oldIrql);
@@ -928,9 +797,7 @@ static NTSTATUS NTAPI DispatchCleanup(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 
     for (LONG i = 0; i < cancel_n; i++) {
         PIRP irp = cancel_local[i];
-        /* On handle close Wine may already have cancelled these via the cancel
-         * routine. Claim ownership first; only complete the ones we win — the
-         * rest the cancel routine completes. Prevents the double-completion UAF. */
+        
         if (rx_claim_irp(irp)) {
             irp->IoStatus.Status = STATUS_CANCELLED;
             irp->IoStatus.Information = 0;
@@ -951,15 +818,15 @@ static NTSTATUS NTAPI DispatchCleanup(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     return STATUS_SUCCESS;
 }
 
-/* IOCTL codes — derived from RvNetMP60.sys RE and RvControlSvc.exe call sites */
-#define IOCTL_RVPN_VERSION    0x0022c004  /* in:8B (ver+mac), out:12B */
-#define IOCTL_RVPN_STATUS     0x00224018  /* in:0, out:4B state */
-#define IOCTL_RVPN_CONNECT    0x00224020  /* in:0, out:1B media-connected byte */
-#define IOCTL_RVPN_SETLINK    0x00224010  /* in:0xb8B adapter info, out:0 */
-#define IOCTL_RVPN_SETUP      0x0022801c  /* in:4B mode, out:0 */
-#define IOCTL_RVPN_PEERMAC    0x00228014  /* in:6B MAC, out:0 */
-#define IOCTL_RVPN_SETMAC     0x00228024  /* in/out:various */
-#define IOCTL_RVPN_VERSION2   0x0022c004  /* alias */
+
+#define IOCTL_RVPN_VERSION    0x0022c004  
+#define IOCTL_RVPN_STATUS     0x00224018  
+#define IOCTL_RVPN_CONNECT    0x00224020  
+#define IOCTL_RVPN_SETLINK    0x00224010  
+#define IOCTL_RVPN_SETUP      0x0022801c  
+#define IOCTL_RVPN_PEERMAC    0x00228014  
+#define IOCTL_RVPN_SETMAC     0x00228024  
+#define IOCTL_RVPN_VERSION2   0x0022c004  
 
 static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
@@ -985,19 +852,18 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
 
     switch (ioctl) {
     case IOCTL_RVPN_VERSION:
-        /* When service sends version=4: return [status=0][MAC 6 bytes][pad to 12]
-           Otherwise: return [status=1] (version mismatch) */
+        
         if (outLen >= 12 && sysBuffer) {
             ULONG *inData = (ULONG *)sysBuffer;
             UCHAR *out = (UCHAR *)sysBuffer;
             ULONG reqVer = (inLen >= 4) ? inData[0] : 0;
 
             if (reqVer == 4) {
-                /* Version OK — return MAC address */
+                
                 ULONG st_val = 0;
-                RtlCopyMemory(out, &st_val, 4);           /* status = 0 */
-                RtlCopyMemory(out + 4, g_adapter_mac, 6); /* MAC address */
-                RtlZeroMemory(out + 10, 2);                /* padding */
+                RtlCopyMemory(out, &st_val, 4);           
+                RtlCopyMemory(out + 4, g_adapter_mac, 6); 
+                RtlZeroMemory(out + 10, 2);                
                 info = 12;
                 drv_log("VERSION: returned MAC");
             } else {
@@ -1010,9 +876,7 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
         break;
 
     case IOCTL_RVPN_STATUS:
-        /* Returns 4-byte NDIS adapter status. Bit 0 = media present/active.
-         * Service checks: if (status != 0 && (status & 1)) → call IOCTL_RVPN_CONNECT.
-         * We report 1 (connected). */
+        
         if (outLen >= 4 && sysBuffer) {
             *((ULONG *)sysBuffer) = 1;
             info = 4;
@@ -1020,24 +884,15 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
         break;
 
     case IOCTL_RVPN_CONNECT:
-        /* Returns 1-byte media-connected state from NDIS adapter status byte.
-         * Real driver returns: adapter_status_byte & 0x20 (NdisMediaStateConnected flag).
-         * Service uses DeviceIoControl(h, 0x224020, NULL, 0, &out, 1, &br, NULL).
-         * If br==0 (no bytes written), DeviceIoControl returns FALSE → service logs
-         * IOCTL failure and sends CDeviceRemoved message → VPN disconnects.
-         * Must write exactly 1 byte to avoid that failure path. 0x20 = connected. */
+        
         if (outLen >= 1 && sysBuffer) {
-            *((UCHAR *)sysBuffer) = 0x20;  /* NdisMediaStateConnected */
+            *((UCHAR *)sysBuffer) = 0x20;  
             info = 1;
         }
         break;
 
     case IOCTL_RVPN_SETLINK:
-        /* Real NetMP60 answers this with a 0xB8-byte stats/link block (RE'd:
-         * in=0 out=0xB8). If the service polls it expecting output and checks
-         * br, a 0-byte completion can trip CDeviceRemoved (see CONNECT/default
-         * comments). Mirror the genuine driver: zeroed 0xB8 block when the
-         * caller gave us the buffer, otherwise succeed silently. */
+        
         if (outLen >= 0xB8 && sysBuffer) {
             RtlZeroMemory(sysBuffer, 0xB8);
             info = 0xB8;
@@ -1045,9 +900,7 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
         break;
 
     case IOCTL_RVPN_SETMAC:
-        /* Real NetMP60 answers this per-peer property IOCTL with Information=1
-         * (RE'd: out=1). Acknowledge the same way so a br-checking service does
-         * not treat it as a failure. Accept silently if no output buffer. */
+        
         if (outLen >= 1 && sysBuffer) {
             *((UCHAR *)sysBuffer) = 0;
             info = 1;
@@ -1073,16 +926,7 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
             LONG assigned = -1;
             LONG grew_to = 0;
 
-            /* Share g_irp_queue.Lock with the RX thread: lookups there
-             * already hold it, and slot reuse on DispatchClose needs it
-             * too. One lock means no inversion.
-             *
-             * Growth path: if the table is full, sample the capacity under
-             * lock, drop the lock to ExAllocatePool (forbidden at
-             * DISPATCH_LEVEL under certain pool types and generally unwise
-             * while holding a spinlock), then reacquire to install. If
-             * another PEERMAC beat us to the growth we drop our buffer and
-             * retry — the winner already made room. */
+            
             for (;;) {
                 KeAcquireSpinLock(&g_irp_queue.Lock, &oldIrql);
                 for (LONG i = 0; i < g_peer_route_count; i++) {
@@ -1098,7 +942,7 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
                     break;
                 }
 
-                /* Table saturated — attempt growth. */
+                
                 LONG old_cap = g_peer_routes_capacity;
                 KeReleaseSpinLock(&g_irp_queue.Lock, oldIrql);
 
@@ -1128,12 +972,12 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
                     g_peer_routes_capacity = new_cap;
                     grew_to = new_cap;
                 } else {
-                    /* Someone else grew first — throw ours away and retry */
+                    
                     old_buf = new_buf;
                 }
                 KeReleaseSpinLock(&g_irp_queue.Lock, oldIrql);
                 ExFreePoolWithTag(old_buf, PEER_ROUTES_TAG);
-                /* Retry the assignment with the (possibly new) capacity */
+                
             }
 
             char buf[64] = "PEERMAC fo=";
@@ -1156,9 +1000,7 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
         break;
 
     default: {
-        /* Log every unhandled IOCTL: these complete with info=0 (no output
-         * bytes), which can make RvControlSvc fire CDeviceRemoved if it
-         * checks br==0 on some periodic poll IOCTL we haven't mapped yet. */
+        
         char ubuf[64] = "IOCTL_UNKNOWN 0x";
         hex32(ubuf + 16, ioctl);
         ubuf[24] = ' '; ubuf[25] = 'o'; ubuf[26] = '=';
@@ -1175,12 +1017,7 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
     return status;
 }
 
-/*
- * DispatchRead — returns TLV-encoded frames to the service.
- *
- * If ring has frames, TLV-encode and return immediately (pack multiple).
- * If ring is empty, pend the IRP for the RX thread.
- */
+
 static NTSTATUS NTAPI DispatchRead(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     PDEVICE_EXTENSION ext = (PDEVICE_EXTENSION)DeviceObject->DeviceExtension;
@@ -1195,7 +1032,7 @@ static NTSTATUS NTAPI DispatchRead(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     ULONG ridx = g_rx_ring.read_idx;
 
     if (ridx < g_rx_ring.write_idx) {
-        /* Frames available — TLV-encode as many as fit in the buffer */
+        
         PUCHAR outBuf = NULL;
         if (Irp->MdlAddress)
             outBuf = (PUCHAR)MmGetSystemAddressForMdlSafe(Irp->MdlAddress, NormalPagePriority);
@@ -1221,7 +1058,7 @@ static NTSTATUS NTAPI DispatchRead(PDEVICE_OBJECT DeviceObject, PIRP Irp)
                                               g_rx_ring.frames[slot].data,
                                               frameLen, ext->SetupMode);
             if (written == 0)
-                break;  /* no more room */
+                break;  
 
             totalWritten += written;
             InterlockedIncrement((volatile LONG *)&g_rx_ring.read_idx);
@@ -1247,19 +1084,14 @@ static NTSTATUS NTAPI DispatchRead(PDEVICE_OBJECT DeviceObject, PIRP Irp)
         return STATUS_SUCCESS;
     }
 
-    /* Ring empty — queue IRP for async completion by RX thread.
-     * The service uses overlapped I/O, so ReadFile returns STATUS_PENDING
-     * immediately. Wine's wineserver delivers the completion when we
-     * call IoCompleteRequest later from the RX thread. */
+    
     IoMarkIrpPending(Irp);
 
     {
         KIRQL oldIrql;
         KeAcquireSpinLock(&g_irp_queue.Lock, &oldIrql);
         if (g_irp_queue.Count >= IRP_QUEUE_SIZE) {
-            /* Queue full — drop oldest IRP. Logged because reaching capacity is
-             * the gate for the compaction Tail-wrap (Finding 2); if this never
-             * fires under load, that path is not in play. */
+            
             LONG qf = InterlockedIncrement(&g_queue_full_drops);
             PIRP oldIrp = g_irp_queue.Irps[g_irp_queue.Head];
             g_irp_queue.Head = (g_irp_queue.Head + 1) % IRP_QUEUE_SIZE;
@@ -1286,10 +1118,7 @@ static NTSTATUS NTAPI DispatchRead(PDEVICE_OBJECT DeviceObject, PIRP Irp)
         g_irp_queue.Tail = (g_irp_queue.Tail + 1) % IRP_QUEUE_SIZE;
         g_irp_queue.Count++;
 
-        /* Arm the cancel routine, then run the textbook enqueue race guard: if
-         * the IRP was already cancelled before we armed, reclaim ownership and
-         * complete it here; otherwise a later cancel goes through the routine.
-         * IoSetCancelRoutine is a lock-free exchange, safe under the queue lock. */
+        
         IoSetCancelRoutine(Irp, RvpnCancelRoutine);
         if (Irp->Cancel && IoSetCancelRoutine(Irp, NULL) != NULL) {
             dequeue_specific_irp_locked(Irp);
@@ -1313,13 +1142,7 @@ static NTSTATUS NTAPI DispatchRead(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     return STATUS_PENDING;
 }
 
-/*
- * DispatchWrite — parses TLV-encoded frames from the service and relays
- * each individual ethernet frame to TAP via the FIFO.
- *
- * Mode 3 format: [u32 mac_prefix][u32 frame_len][frame_data]...
- * Mode < 2:      [u32 frame_len][frame_data]...
- */
+
 static NTSTATUS NTAPI DispatchWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     PDEVICE_EXTENSION ext = (PDEVICE_EXTENSION)DeviceObject->DeviceExtension;
@@ -1345,16 +1168,16 @@ static NTSTATUS NTAPI DispatchWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp)
         return STATUS_SUCCESS;
     }
 
-    /* Parse TLV and relay each frame to FIFO */
+    
     ULONG offset = 0;
     ULONG mode = ext->SetupMode;
     LONG frameCount = 0;
 
     while (offset < length) {
-        /* Mode >= 2: skip 4-byte mac prefix */
+        
         if (mode >= 2) {
             if (offset + 4 > length) break;
-            /* Log first 3 WRITE mac_prefix values for comparison with READ */
+            
             if (frameCount < 3) {
                 char buf[64] = "WR mac=";
                 static const char hx3[] = "0123456789abcdef";
@@ -1369,16 +1192,16 @@ static NTSTATUS NTAPI DispatchWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             offset += 4;
         }
 
-        /* Read 4-byte frame length */
+        
         if (offset + 4 > length) break;
         ULONG frameLen = *((ULONG *)(inBuf + offset));
         offset += 4;
 
-        /* Sanity check */
+        
         if (frameLen == 0 || frameLen > RX_FRAME_MAX || offset + frameLen > length)
             break;
 
-        /* Log inbound ICMP (peer → Linux). Rate-limited to first 3 + every 100th. */
+        
         if (is_ipv4_icmp(inBuf + offset, (USHORT)frameLen)) {
             LONG n = InterlockedIncrement(&g_icmp_tx);
             if (n <= 3 || (n % 100) == 0) {
@@ -1391,10 +1214,7 @@ static NTSTATUS NTAPI DispatchWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             }
         }
 
-        /* Write [u16 len][frame] atomically in a single write so the bridge
-         * always sees a complete unit or nothing (no partial-length race).
-         * Combined size: 2 + frameLen < PIPE_BUF (4096) → kernel guarantees
-         * atomicity. */
+        
         USHORT fifoLen = (USHORT)frameLen;
         HANDLE fifo = classify_high_priority(inBuf + offset, (USHORT)frameLen)
                        ? ext->FifoD2B_High
@@ -1429,7 +1249,7 @@ static NTSTATUS NTAPI DispatchWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     return STATUS_SUCCESS;
 }
 
-/* ============ Driver lifecycle ============ */
+
 
 static VOID NTAPI Unload(PDRIVER_OBJECT DriverObject)
 {
@@ -1437,7 +1257,7 @@ static VOID NTAPI Unload(PDRIVER_OBJECT DriverObject)
     RtlInitUnicodeString(&dosDeviceName, DOSDEVICE_NAME);
     IoDeleteSymbolicLink(&dosDeviceName);
 
-    /* Drain IRP queue — cancel all pending IRPs */
+    
     {
         KIRQL oldIrql;
         KeAcquireSpinLock(&g_irp_queue.Lock, &oldIrql);
@@ -1471,7 +1291,7 @@ static VOID NTAPI Unload(PDRIVER_OBJECT DriverObject)
         g_peer_routes_capacity = 0;
     }
 
-    /* Flush and close log file */
+    
     {
         KIRQL oldIrql;
         KeAcquireSpinLock(&g_log_lock, &oldIrql);
@@ -1516,27 +1336,21 @@ NTSTATUS NTAPI DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING Registry
     KeInitializeSpinLock(&g_irp_queue.Lock);
     KeInitializeSpinLock(&g_log_lock);
 
-    /* Open log file once; drv_log buffers writes to avoid per-call I/O */
+    
     {
         UNICODE_STRING fileName;
-        /* Use Wine's \??\unix\... extension: maps directly to a Linux path,
-         * bypassing the drive-letter translation that fails for regular files
-         * in Wine's fake kernel-mode ZwCreateFile implementation. */
+        
         RtlInitUnicodeString(&fileName, L"\\??\\unix\\tmp\\radmin_driver.log");
         OBJECT_ATTRIBUTES oa;
         InitializeObjectAttributes(&oa, &fileName, OBJ_CASE_INSENSITIVE, NULL, NULL);
         IO_STATUS_BLOCK iosb;
-        /* OBJ_KERNEL_HANDLE is intentionally omitted: Wine's ntdll does not
-         * honour it in kernel-driver context and silently fails ZwCreateFile
-         * when it is present, leaving g_log_file NULL and all drv_log() calls
-         * as silent no-ops.  Omitting it lets Wine open the file normally. */
+        
         ZwCreateFile(&g_log_file, FILE_APPEND_DATA | SYNCHRONIZE, &oa, &iosb,
                      NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ | FILE_SHARE_WRITE,
                      FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
     }
 
-    /* Allocate the initial peer-routes table. Kept small — the table
-     * grows on demand via PEERMAC when real peer counts require it. */
+    
     g_peer_routes = (PEER_ROUTE *)ExAllocatePoolWithTag(
         NonPagedPool, sizeof(PEER_ROUTE) * PEER_ROUTES_INITIAL, PEER_ROUTES_TAG);
     if (!g_peer_routes) {
