@@ -150,6 +150,16 @@ impl RadminVpnService {
         let tap_guid = self.config.tap_guid.as_deref().unwrap_or(DEFAULT_TAP_GUID);
         self.wine_manager.install_components()?;
         self.wine_manager.configure_registry(tap_guid)?;
+        // The first `wine reg add` above boots the Wine session, and wineboot
+        // enumerates kernel drivers at that moment — before the rvpnnetmp
+        // service entry exists in the registry (this machine may be a fresh
+        // prefix). Kill the session so the next spawn boots with the complete
+        // registry and services.exe can load the TAP driver; without this the
+        // Radmin service reports "Failed to setup virtual adapter" and the
+        // adapter never becomes ready.
+        if let Err(e) = self.wine_manager.kill_wine() {
+            warn!("wineserver restart after registry configuration failed: {e}");
+        }
         self.write_mac_file(adapter_mac)?;
 
         let mut bridge = Bridge::new(tap)?;
