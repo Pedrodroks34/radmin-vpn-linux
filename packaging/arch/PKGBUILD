@@ -1,0 +1,17 @@
+#!/bin/bash
+pkgname=radmin-vpn-linux
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc="Radmin VPN client for Linux (Wine + TAP bridge)"
+arch=('x86_64')
+url="https://github.com/Pedrodroks34/radmin-vpn-linux"
+license=('GPL-3.0-only')
+depends=('wine' 'iproute2' 'iptables' 'systemd')
+provides=('radmin-vpn')
+install="$pkgname.install"
+source=()
+sha256sums=()
+
+package() {
+  STAGE_ROOT="${STAGE_ROOT:-$(CDPATH= cd -- "$startdir/../.." && pwd)}" "$startdir/../stage.sh" "$pkgdir"
+}

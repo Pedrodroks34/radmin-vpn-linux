@@ -2,6 +2,28 @@
 
 This rewrite provides a Rust `radmin-vpn` binary and a systemd unit that owns the TAP interface for the lifetime of the service. The proprietary Radmin VPN Windows binaries and Wine remain external dependencies.
 
+## Pre-built packages
+
+Tagged releases on GitHub publish ready-to-install packages (built by CI):
+
+| Format | Distros | File |
+|--------|---------|------|
+| Debian | Debian, Ubuntu | `radmin-vpn-linux_<version>_amd64.deb` |
+| RPM | Fedora, RHEL, openSUSE | `radmin-vpn-linux-<version>-1.x86_64.rpm` |
+| Pacman | Arch, CachyOS | `radmin-vpn-linux-<version>-1-x86_64.pkg.tar.zst` |
+| Tarball | any | `radmin-vpn-linux-<version>-x86_64.tar.gz` (with `install.sh`/`uninstall.sh`) |
+
+The unit file runs the service as `User=pedrodroks` (the machine this project is developed on). On other machines create that user, or better, override `User=` with a drop-in before enabling:
+
+```sh
+sudo systemctl edit radmin-vpn.service   # systemd opens an editor
+# or non-interactively:
+sudo mkdir -p /etc/systemd/system/radmin-vpn.service.d
+printf '[Service]\nUser=%s\n' "$USER" | sudo tee /etc/systemd/system/radmin-vpn.service.d/user.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now radmin-vpn.service
+```
+
 ## Dependencies
 
 Common requirements:

@@ -1,0 +1,13 @@
+post_install() {
+  systemctl daemon-reload
+  systemctl enable radmin-vpn.service || true
+}
+
+post_upgrade() {
+  systemctl daemon-reload
+}
+
+post_remove() {
+  systemctl disable radmin-vpn.service || true
+  systemctl daemon-reload
+}

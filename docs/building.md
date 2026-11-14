@@ -1,56 +1,24 @@
 # Building from source
 
-Requirements:
-
-- Rust (stable, with `rustfmt` and `clippy` for development)
-- TUN/TAP kernel support (`modprobe tun`)
-- nftables or iptables
-- Wine (to run the proprietary Radmin service/GUI)
-- iproute2
-
-Arch Linux:
+Requires Rust, make and a MinGW-w64 cross toolchain (with DDK headers for the Windows miniport driver shim).
 
 ```bash
-sudo pacman -S --needed rust nftables wine iproute2 curl
+make
 ```
 
-Debian/Ubuntu:
+This builds the Rust workspace (`cargo build --release --workspace`) and the Windows interoperability shims under `build/`:
 
-```bash
-sudo apt-get install -y cargo rustc nftables wine iproute2 curl
-```
+- `rvpnnetmp.sys` — NDIS miniport (MinGW + DDK headers)
+- `adapter_hook.dll` — adapter hook (MinGW)
+- `rvpn_launcher.exe` — Wine launcher (MinGW)
+- `netsh.exe` / `netsh64.exe` — netsh wrappers (MinGW)
+- `drvinst.exe` — no-op driver-install stub (MinGW)
 
-Fedora:
-
-```bash
-sudo dnf install -y rust cargo nftables wine iproute2 curl
-```
-
-Build:
-
-```bash
-cargo build --release --workspace
-```
-
-Install:
-
-```bash
-sudo make install
-sudo systemctl daemon-reload
-sudo systemctl enable --now radmin-vpn.service
-```
-
-Run directly:
-
-```bash
-sudo /usr/local/bin/radmin-vpn --json-logs service
-```
-
-The service owns the TAP interface and ships notify/watchdog integration. See [systemd.md](systemd.md).
+The Linux-side runtime (TAP bridge, service, firewall/routes, lifecycle) is Rust. The PE artifacts are interop shims required by the Wine/Radmin protocol and are the reason a plain `cargo build` is not enough to produce a working install.
 
 ## Windows PE artifacts
 
-Windows components are not validated as part of this workspace build. They require a Windows cross target and DDK-compatible headers. The Rust modules under `src/protocol/` and `src/driver/` are structured so the same protocol logic can be reused in a Windows PE build.
+Built with MinGW: `i686-w64-mingw32-gcc` (x86) and `x86_64-w64-mingw32-gcc` (x86_64), with DDK headers at `/usr/x86_64-w64-mingw32/include/ddk` (Debian/Ubuntu) or `/usr/x86_64-w64-mingw32/sys-root/mingw/include/ddk` (Fedora/RHEL).
 
 ## Tests
 
@@ -58,4 +26,21 @@ Windows components are not validated as part of this workspace build. They requi
 cargo test --all-features
 cargo clippy --all-targets --all-features
 cargo fmt --check
+```
+
+## Packages
+
+CI (`.github/workflows/build.yml`) builds and publishes distributable packages on tags `v*` (and as workflow artifacts otherwise):
+
+- `radmin-vpn-linux_<version>_amd64.deb` (Debian/Ubuntu)
+- `radmin-vpn-linux-<version>-1.x86_64.rpm` (Fedora/RHEL)
+- `radmin-vpn-linux-<version>-1-x86_64.pkg.tar.zst` (Arch/CachyOS)
+- `radmin-vpn-linux-<version>-x86_64.tar.gz` (portable bundle with `install.sh`/`uninstall.sh`)
+
+To build them locally (requires `dpkg-dev`, `rpm-tools`/`rpm`, and either `docker` or native `makepkg` for the Arch package):
+
+```bash
+make
+./packaging/build-packages.sh "" ./dist        # version = git describe --tags or Cargo.toml
+./packaging/build-arch-package.sh "" ./dist
 ```

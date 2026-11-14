@@ -45,3 +45,4 @@ wine_memory_monitor.txt
 
 # OpenCode session/continuation state
 .omo/
+dist/

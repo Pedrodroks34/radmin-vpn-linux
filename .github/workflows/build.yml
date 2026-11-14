@@ -46,8 +46,50 @@ jobs:
             packaging/systemd/radmin-vpn.service
             packaging/tmpfiles.d/radmin-vpn.conf
 
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential make dpkg-dev rpm zstd docker.io \
+            gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev
+
+      - name: Build all targets
+        run: make
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          VERSION="${VERSION#v}"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb, .rpm and .tar.gz
+        run: ./packaging/build-packages.sh "${{ steps.version.outputs.version }}" dist
+
+      - name: Build Arch package
+        run: ./packaging/build-arch-package.sh "${{ steps.version.outputs.version }}" dist
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: radmin-vpn-linux-packages
+          path: dist/*
+
   release:
-    needs: rust
+    needs: [rust, packages]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -57,25 +99,18 @@ jobs:
         with:
           name: radmin-vpn-linux-release
 
-      - name: Create release archive
-        run: |
-          set -e
-          mkdir -p radmin-vpn-linux-${{ github.ref_name }}
-          cp radmin-vpn radmin-vpn-linux-${{ github.ref_name }}/
-          if [ -f librvpn_dnsfix.so ]; then
-            cp librvpn_dnsfix.so radmin-vpn-linux-${{ github.ref_name }}/
-          fi
-          if [ -f librvpn_reuseport.so ]; then
-            cp librvpn_reuseport.so radmin-vpn-linux-${{ github.ref_name }}/
-          fi
-          cp radmin-vpn.service radmin-vpn-linux-${{ github.ref_name }}/ || true
-          cp radmin-vpn.conf radmin-vpn-linux-${{ github.ref_name }}/ || true
-          tar czf radmin-vpn-linux-${{ github.ref_name }}.tar.gz radmin-vpn-linux-${{ github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: radmin-vpn-linux-packages
+          path: dist
 
-      - name: Create release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            radmin-vpn-linux-${{ github.ref_name }}.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/*.tar.gz
           generate_release_notes: true
