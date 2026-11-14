@@ -23,4 +23,3 @@ jobs:
       run: |
         test -x result/bin/radmin-vpn
         test -f result/lib/systemd/system/radmin-vpn.service
-        test -f result/lib/tmpfiles.d/radmin-vpn.conf

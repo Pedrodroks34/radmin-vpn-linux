@@ -74,11 +74,10 @@ The main binary is `target/release/radmin-vpn`. The workspace also builds the Wi
 ## Install (manual)
 
 ```sh
-sudo install -Dm755 target/release/radmin-vpn /usr/lib/radmin-vpn/radmin-vpn
+sudo install -Dm755 target/release/radmin-vpn /usr/bin/radmin-vpn
 sudo install -Dm644 packaging/systemd/radmin-vpn.service /usr/lib/systemd/system/radmin-vpn.service
-sudo install -Dm644 packaging/tmpfiles.d/radmin-vpn.conf /usr/lib/tmpfiles.d/radmin-vpn.conf
-sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/radmin-vpn.conf
-
+# The /run/radmin-vpn runtime dir is created by the unit's RuntimeDirectory=
+# on every start (with the correct owner); no tmpfiles.d snippet is needed.
 # Optional LD_PRELOAD shims (recommended for Wine/Radmin compatibility):
 sudo install -Dm755 target/release/librvpn_dnsfix.so /usr/lib/radmin-vpn/rvpn_dnsfix.so
 sudo install -Dm755 target/release/librvpn_reuseport.so /usr/lib/radmin-vpn/rvpn_reuseport.so
@@ -152,11 +151,13 @@ ip link show radminvpn0 || echo "TAP removed"
 ```sh
 sudo systemctl disable --now radmin-vpn.service
 sudo rm -f /usr/lib/systemd/system/radmin-vpn.service
-sudo rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf
+sudo rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf   # removes stale config from older versions
 sudo rm -rf /usr/lib/radmin-vpn /run/radmin-vpn
 sudo rm -f /run/radmin-vpn/service.lock
 sudo systemctl daemon-reload
 ```
+
+Packages newer than 1.2.1 remove `/usr/lib/tmpfiles.d/radmin-vpn.conf` automatically on install/upgrade (via postinst / post_install / tarball installer).
 
 ## Windows PE cross-build notes
 

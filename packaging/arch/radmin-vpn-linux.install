@@ -1,13 +1,16 @@
 post_install() {
+  rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
   systemctl daemon-reload
   systemctl enable radmin-vpn.service || true
 }
 
 post_upgrade() {
+  rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
   systemctl daemon-reload
 }
 
 post_remove() {
+  rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
   systemctl disable radmin-vpn.service || true
   systemctl daemon-reload
 }

@@ -6,7 +6,6 @@
 
 PREFIX ?= /usr
 SYSTEMDDIR ?= /usr/lib/systemd/system
-TMPFILESDIR ?= /usr/lib/tmpfiles.d
 BINDIR ?= $(PREFIX)/bin
 LIBDIR ?= $(PREFIX)/lib
 ASSETDIR ?= $(LIBDIR)/radmin-vpn
@@ -100,7 +99,6 @@ install: target/release/radmin-vpn $(WINBINS)
 	install -d -m 0755 "$(DESTDIR)$(LIBDIR)"
 	install -Dm0755 target/release/radmin-vpn "$(DESTDIR)$(BINDIR)/radmin-vpn"
 	install -Dm0644 packaging/systemd/radmin-vpn.service "$(DESTDIR)$(SYSTEMDDIR)/radmin-vpn.service"
-	install -Dm0644 packaging/tmpfiles.d/radmin-vpn.conf "$(DESTDIR)$(TMPFILESDIR)/radmin-vpn.conf"
 	install -d -m 0755 "$(DESTDIR)$(ASSETDIR)"
 	for f in $(WINBINS); do install -Dm0644 "$$f" "$(DESTDIR)$(ASSETDIR)/$$(basename $$f)"; done
 	if [ -f target/release/librvpn_dnsfix.so ]; then \

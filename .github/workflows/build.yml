@@ -44,7 +44,6 @@ jobs:
             target/release/librvpn_dnsfix.so
             target/release/librvpn_reuseport.so
             packaging/systemd/radmin-vpn.service
-            packaging/tmpfiles.d/radmin-vpn.conf
 
   packages:
     needs: rust

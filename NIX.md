@@ -70,7 +70,7 @@ cargo build --release --workspace
 
 ## Limitations (important)
 
-The flake builds the Rust `radmin-vpn` binary, the systemd unit and `tmpfiles.d`. It does **not** build the Windows interoperability shims (`rvpnnetmp.sys`, `adapter_hook.dll`, `rvpn_launcher.exe`, `netsh.exe`, `netsh64.exe`, `drvinst.exe`), which require a MinGW toolchain with DDK headers. The service **requires** those in `/usr/lib/radmin-vpn/` (it fails loudly without them), so the Nix package installs but the VPN service will not start until the shims are available — use `make install` or a `.deb`/`.rpm`/`.pkg.tar.zst` release, which ship them.
+The flake builds the Rust `radmin-vpn` binary and the systemd unit. It does **not** build the Windows interoperability shims (`rvpnnetmp.sys`, `adapter_hook.dll`, `rvpn_launcher.exe`, `netsh.exe`, `netsh64.exe`, `drvinst.exe`), which require a MinGW toolchain with DDK headers. The service **requires** those in `/usr/lib/radmin-vpn/` (it fails loudly without them), so the Nix package installs but the VPN service will not start until the shims are available — use `make install` or a `.deb`/`.rpm`/`.pkg.tar.zst` release, which ship them.
 
 The flake is kept honest about this instead of silently producing a broken package.
 

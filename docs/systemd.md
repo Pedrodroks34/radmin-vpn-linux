@@ -13,7 +13,6 @@ ExecStart=/usr/lib/radmin-vpn/radmin-vpn --json-logs service
 - `Type=notify` + `NotifyAccess=main`: the process calls `READY=1` after the TAP adapter, routes, firewall rules, and lock are established. Until then, systemd considers the unit not started.
 - The runtime directory is created as `/run/radmin-vpn` with `RuntimeDirectory=radmin-vpn` and `RuntimeDirectoryMode=0750`. The lock file lives there.
 - The persistent state directory is created as `/var/lib/radmin-vpn` with `StateDirectory=radmin-vpn` (`StateDirectoryMode=0750`). The TAP ownership record lives in `/var/lib/radmin-vpn/tap.state` so it survives `systemctl stop` (systemd removes the runtime directory when the unit stops, but the persistent TAP interface does not disappear).
-- `tmpfiles.d` (`packaging/tmpfiles.d/radmin-vpn.conf`) recreates `/run/radmin-vpn` and the lock path on boot.
 
 ## Reload behavior (`ExecReload`)
 

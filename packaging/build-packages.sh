@@ -36,7 +36,6 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 PREFIX="${PREFIX:-/usr}"
 SYSD="${SYSTEMDDIR:-/usr/lib/systemd/system}"
-TMPF="${TMPFILESDIR:-/usr/lib/tmpfiles.d}"
 DOC="${DOCDIR:-/usr/share/doc/radmin-vpn-linux}"
 
 if [ "$PREFIX" = "/usr" ] && [ "$(id -u)" -ne 0 ]; then
@@ -46,7 +45,7 @@ fi
 
 install -Dm755 usr/bin/radmin-vpn "$PREFIX/bin/radmin-vpn"
 install -Dm0644 usr/lib/systemd/system/radmin-vpn.service "$SYSD/radmin-vpn.service"
-install -Dm0644 usr/lib/tmpfiles.d/radmin-vpn.conf "$TMPF/radmin-vpn.conf"
+rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
 install -d -m 0755 "$PREFIX/lib/radmin-vpn"
 for f in usr/lib/radmin-vpn/*; do
   case "$f" in
@@ -69,7 +68,6 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 PREFIX="${PREFIX:-/usr}"
 SYSD="${SYSTEMDDIR:-/usr/lib/systemd/system}"
-TMPF="${TMPFILESDIR:-/usr/lib/tmpfiles.d}"
 DOC="${DOCDIR:-/usr/share/doc/radmin-vpn-linux}"
 
 if [ "$PREFIX" = "/usr" ] && [ "$(id -u)" -ne 0 ]; then
@@ -78,7 +76,7 @@ if [ "$PREFIX" = "/usr" ] && [ "$(id -u)" -ne 0 ]; then
 fi
 
 systemctl disable --now radmin-vpn.service >/dev/null 2>&1 || true
-rm -f "$PREFIX/bin/radmin-vpn" "$SYSD/radmin-vpn.service" "$TMPF/radmin-vpn.conf"
+rm -f "$PREFIX/bin/radmin-vpn" "$SYSD/radmin-vpn.service" /usr/lib/tmpfiles.d/radmin-vpn.conf
 rm -rf "$PREFIX/lib/radmin-vpn" "$DOC"
 systemctl daemon-reload
 echo "uninstalled"
@@ -108,6 +106,7 @@ EOF
 cat > "$DEBROOT/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
+rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || true
 if [ -d /run/systemd/system ]; then
   systemctl daemon-reload
   systemctl enable radmin-vpn.service >/dev/null 2>&1 || true
@@ -164,10 +163,10 @@ cp -a %{stagedir}/. %{buildroot}/
 /usr/bin/radmin-vpn
 /usr/lib/radmin-vpn
 /usr/lib/systemd/system/radmin-vpn.service
-/usr/lib/tmpfiles.d/radmin-vpn.conf
 /usr/share/doc/radmin-vpn-linux
 
 %post
+rm -f /usr/lib/tmpfiles.d/radmin-vpn.conf || :
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload || :
     systemctl enable radmin-vpn.service >/dev/null 2>&1 || :

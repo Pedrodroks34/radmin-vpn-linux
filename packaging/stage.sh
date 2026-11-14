@@ -8,8 +8,6 @@ install -Dm755 "$SRC_ROOT/target/release/radmin-vpn" "$DEST/usr/bin/radmin-vpn"
 
 install -Dm0644 "$SRC_ROOT/packaging/systemd/radmin-vpn.service" \
   "$DEST/usr/lib/systemd/system/radmin-vpn.service"
-install -Dm0644 "$SRC_ROOT/packaging/tmpfiles.d/radmin-vpn.conf" \
-  "$DEST/usr/lib/tmpfiles.d/radmin-vpn.conf"
 
 install -d -m 0755 "$DEST/usr/lib/radmin-vpn"
 for f in rvpnnetmp.sys adapter_hook.dll rvpn_launcher.exe netsh.exe netsh64.exe drvinst.exe; do

@@ -40,7 +40,7 @@
             done
             echo "installPhase: using cargo output directory: $targetDir"
 
-            install -d $out/bin $out/lib/radmin-vpn $out/lib/systemd/system $out/lib/tmpfiles.d
+            install -d $out/bin $out/lib/radmin-vpn $out/lib/systemd/system
             install -m755 "$targetDir/radmin-vpn" $out/bin/radmin-vpn
 
             if [ -f "$targetDir/librvpn_dnsfix.so" ]; then
@@ -51,7 +51,6 @@
             fi
 
             cp packaging/systemd/radmin-vpn.service $out/lib/systemd/system/radmin-vpn.service
-            cp packaging/tmpfiles.d/radmin-vpn.conf $out/lib/tmpfiles.d/radmin-vpn.conf
 
             runHook postInstall
           '';
