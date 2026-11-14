@@ -155,7 +155,7 @@ mod tests {
     fn installer_name() {
         let config = crate::config::Config::default();
         let mgr = InstallerManager::new(&config);
-        assert_eq!(mgr.installer_name(), "Radmin_VPN_2.1.4951.1.exe");
+        assert_eq!(mgr.installer_name(), "Radmin_VPN_2.1.4952.2.exe");
     }
 
     #[test]
@@ -163,7 +163,7 @@ mod tests {
         let config = crate::config::Config::default();
         let mgr = InstallerManager::new(&config);
         let url = mgr.installer_url();
-        assert!(url.contains("2.1.4951.1"));
+        assert!(url.contains("2.1.4952.2"));
         assert!(url.contains("download.radmin-vpn.com"));
     }
 }

@@ -209,6 +209,12 @@ fn cmd_setup(
                 "wineboot completed but drive_c was not created in the prefix".to_string(),
             ));
         }
+        // Wine boots its service control manager asynchronously: a fresh
+        // prefix's SCM is not necessarily answering when wineboot exits, and
+        // the Radmin installer's StartServices action fails against a
+        // half-booted session (it then rolls the whole install back). Wait
+        // for the SCM to report RpcSs as running before continuing.
+        wait_for_scm(&config.wineprefix)?;
     }
 
     // 2. Install Radmin VPN into the prefix if missing. The installer is an
@@ -266,6 +272,35 @@ fn default_pin_for(version: &str) -> Option<String> {
         Some(crate::core::constants::RADMIN_SHA256_PINNED.to_string())
     } else {
         None
+    }
+}
+
+/// Block until the Wine service control manager answers (RpcSs RUNNING) or the
+/// timeout elapses. Wine reports auto-start failures on services that are
+/// not critical (winebus etc.), which is fine; what matters is that the SCM
+/// itself responds.
+fn wait_for_scm(wineprefix: &std::path::Path) -> Result<(), RvpnError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let output = std::process::Command::new("wine")
+            .env("WINEPREFIX", wineprefix)
+            .args(["sc", "query", "RpcSs"])
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                return Ok(());
+            }
+        }
+
+        if std::time::Instant::now() >= deadline {
+            return Err(RvpnError::Config(
+                "wine services did not come up within 60s (SCM not responding); \
+                 try `wineboot --init` manually and retry"
+                    .to_string(),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
 }
 

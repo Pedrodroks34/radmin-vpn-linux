@@ -44,13 +44,13 @@ pub const DEFAULT_WINEPREFIX: &str = "$HOME/.local/share/radmin-vpn-linux/winepr
 
 pub const DEFAULT_BUILD_DIR: &str = "./build";
 
-pub const DEFAULT_RADMIN_VERSION: &str = "2.1.4951.1";
+pub const DEFAULT_RADMIN_VERSION: &str = "2.1.4952.2";
 
 pub const RADMIN_INSTALLER_URL_TEMPLATE: &str =
     "https://download.radmin-vpn.com/download/files/Radmin_VPN_{version}.exe";
 
 pub const RADMIN_SHA256_PINNED: &str =
-    "e16711e2e3e59f6603f51f437197215b1914a3d8316e1f633260178b959921f7";
+    "717a87141fd703bb58bb730d3282e31055bf4ea9c319177ade9b793974a7d5a4";
 
 pub const WIN_DEVICE_NAME: &str = "\\\\.\\RVPNNETMP";
 
