@@ -262,10 +262,13 @@ impl WineProcessManager {
                 let path = entry.path();
                 if path.extension().map(|e| e == "desktop").unwrap_or(false) {
                     if let Ok(contents) = std::fs::read_to_string(&path) {
+                        // Purge stale Radmin launcher entries (created by the
+                        // Radmin installer pointing at some wineprefix) — but
+                        // keep entries that point at the configured prefix, so a
+                        // user-created launcher survives service restarts.
+                        let prefix = self.wine_prefix.to_string_lossy().into_owned();
                         if (contents.contains("Radmin") || contents.contains("radmin"))
-                            && (contents
-                                .contains(&format!("WINEPREFIX={}", self.wine_prefix.display()))
-                                || contents.contains("Radmin"))
+                            && !contents.contains(&prefix)
                         {
                             let _ = std::fs::remove_file(&path);
                             purged += 1;
