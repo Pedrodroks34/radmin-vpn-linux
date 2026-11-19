@@ -55,8 +55,8 @@ pub enum Commands {
     },
 
     Service {
-        #[arg(long, default_value = "radminvpn0")]
-        tap_dev: String,
+        #[arg(long)]
+        tap_dev: Option<String>,
 
         #[arg(long)]
         adapter_mac: Option<String>,
@@ -323,7 +323,7 @@ fn install_radmin_installer(config: &Config, installer: &std::path::Path) -> Res
 }
 
 fn cmd_service(
-    tap_dev: String,
+    tap_dev: Option<String>,
     adapter_mac: Option<String>,
     no_ui: bool,
     no_firewall: bool,
@@ -335,7 +335,9 @@ fn cmd_service(
         Config::from_env()?
     };
 
-    config.tap_dev = tap_dev;
+    if let Some(tap_dev) = tap_dev {
+        config.tap_dev = tap_dev;
+    }
     config.no_ui = no_ui;
     config.firewall = !no_firewall;
 

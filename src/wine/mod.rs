@@ -262,14 +262,12 @@ impl WineProcessManager {
                 let path = entry.path();
                 if path.extension().map(|e| e == "desktop").unwrap_or(false) {
                     if let Ok(contents) = std::fs::read_to_string(&path) {
-                        // Purge stale Radmin launcher entries (created by the
-                        // Radmin installer pointing at some wineprefix) — but
-                        // keep entries that point at the configured prefix, so a
-                        // user-created launcher survives service restarts.
-                        let prefix = self.wine_prefix.to_string_lossy().into_owned();
-                        if (contents.contains("Radmin") || contents.contains("radmin"))
-                            && !contents.contains(&prefix)
-                        {
+                        // Only purge entries that reference a wineprefix which no
+                        // longer exists on disk (stale debris from old/test
+                        // installs). Entries referencing any live prefix — the
+                        // configured one or another valid one — are kept, and
+                        // entries we cannot parse are always kept.
+                        if Self::desktop_references_missing_prefix(&contents) {
                             let _ = std::fs::remove_file(&path);
                             purged += 1;
                         }
@@ -283,6 +281,42 @@ impl WineProcessManager {
         }
 
         Ok(())
+    }
+
+    /// Return true only when the .desktop file references a wineprefix path
+    /// that does not exist on disk — i.e. it is certainly stale debris.
+    /// Anything referencing a live prefix (the configured one or another) is
+    /// kept, as is anything we cannot parse.
+    fn desktop_references_missing_prefix(contents: &str) -> bool {
+        let mut found_any = false;
+        for prefix in Self::extract_wineprefix_refs(contents) {
+            found_any = true;
+            if std::path::Path::new(&prefix).exists() {
+                return false;
+            }
+        }
+        found_any
+    }
+
+    fn extract_wineprefix_refs(contents: &str) -> Vec<String> {
+        let marker = "WINEPREFIX=";
+        let mut out = Vec::new();
+        let mut rest = contents;
+        while let Some(idx) = rest.find(marker) {
+            let after = &rest[idx + marker.len()..];
+            // `env "WINEPREFIX=/path" wine ...` — the value ends at the
+            // closing quote; otherwise it ends at whitespace.
+            let end = match after.find('"') {
+                Some(0) => after.len(),
+                Some(n) => n,
+                None => after.find([' ', '\t', '\n']).unwrap_or(after.len()),
+            };
+            if end > 0 {
+                out.push(after[..end].to_string());
+            }
+            rest = &after[end..];
+        }
+        out
     }
 
     pub fn reg_add(

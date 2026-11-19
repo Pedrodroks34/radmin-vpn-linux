@@ -76,20 +76,32 @@ impl Bridge {
         })
     }
 
+    /// FIFO creation refuses to adopt pre-existing FIFOs unless they are
+    /// owned by us with 0600: `/tmp` is world-writable, so another local user
+    /// could pre-create a FIFO we'd happily relay raw VPN frames through.
     pub fn create_fifos() -> Result<(), crate::RvpnError> {
         for path in [FIFO_B2D, FIFO_D2B_HIGH, FIFO_D2B_LOW] {
-            match std::fs::symlink_metadata(path) {
-                Ok(meta) if meta.file_type().is_fifo() => continue,
-                Ok(_) => {
+            if let Ok(meta) = std::fs::symlink_metadata(path) {
+                if !meta.file_type().is_fifo() {
                     return Err(crate::RvpnError::Bridge(format!(
                         "{path} exists and is not a FIFO; refusing to replace it"
                     )));
                 }
-                Err(_) => {}
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                let uid = unsafe { libc::geteuid() };
+                if meta.uid() != uid {
+                    return Err(crate::RvpnError::Bridge(format!(
+                        "{path} exists but is owned by uid {}; refusing to adopt it",
+                        meta.uid()
+                    )));
+                }
+                // Our own FIFO — tighten to 0600 and adopt.
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                continue;
             }
             let c_path = CString::new(path)
                 .map_err(|e| crate::RvpnError::Bridge(format!("CString {path}: {e}")))?;
-            let mode = Mode::S_IRWXU.bits() | Mode::S_IRWXG.bits() | Mode::S_IRWXO.bits();
+            let mode = Mode::S_IRUSR.bits() | Mode::S_IWUSR.bits();
             let ret = unsafe { libc::mkfifo(c_path.as_ptr(), mode) };
             if ret != 0 {
                 let err = Errno::last();
@@ -201,7 +213,7 @@ impl Bridge {
         let tap_mac = self.tap.mac();
 
         if let Ok(cfg) = load_filter_config() {
-            *self.filters.write().unwrap() = cfg;
+            *self.filters.write().unwrap_or_else(|e| e.into_inner()) = cfg;
         }
 
         let running_out = running.clone();
@@ -280,7 +292,7 @@ impl Bridge {
 
     pub fn load_filters(&self) -> Result<(), crate::RvpnError> {
         let config = load_filter_config()?;
-        *self.filters.write().unwrap() = config;
+        *self.filters.write().unwrap_or_else(|e| e.into_inner()) = config;
         Ok(())
     }
 }
@@ -349,7 +361,7 @@ fn outgoing_thread(ctx: OutgoingContext) {
 
         if last_filter_load.elapsed() > Duration::from_secs(1) {
             if let Ok(cfg) = load_filter_config() {
-                *filters.write().unwrap() = cfg;
+                *filters.write().unwrap_or_else(|e| e.into_inner()) = cfg;
             }
             last_filter_load = Instant::now();
         }
@@ -383,7 +395,7 @@ fn outgoing_thread(ctx: OutgoingContext) {
         let frame = EthernetFrame::new(buf[..n].to_vec());
 
         {
-            let mut cache = arp_cache.write().unwrap();
+            let mut cache = arp_cache.write().unwrap_or_else(|e| e.into_inner());
             if len >= 42 && frame.ethertype() == Some(0x0806) {
                 let ip = [buf[28], buf[29], buf[30], buf[31]];
                 let mac = [buf[22], buf[23], buf[24], buf[25], buf[26], buf[27]];
@@ -392,25 +404,27 @@ fn outgoing_thread(ctx: OutgoingContext) {
         }
 
         {
-            let filters_guard = filters.read().unwrap();
+            let filters_guard = filters.read().unwrap_or_else(|e| e.into_inner());
             if should_drop_frame(&frame, 0, &filters_guard) {
                 stats.drop_mac.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
         }
 
-        let mut combined = Vec::with_capacity(2 + n);
-        combined.push((len & 0xFF) as u8);
-        combined.push(((len >> 8) & 0xFF) as u8);
-        combined.extend_from_slice(&buf[..n]);
+        // Stack scratch for the 2-byte length prefix + payload (avoids one
+        // heap allocation per frame).
+        let mut combined = [0u8; RELAY_BUF_MAX + 2];
+        combined[0] = (len & 0xFF) as u8;
+        combined[1] = ((len >> 8) & 0xFF) as u8;
+        combined[2..2 + n].copy_from_slice(&buf[..n]);
 
-        match write_exact_nonblock(b2d_fd, &combined) {
+        match write_exact_nonblock(b2d_fd, &combined[..2 + n]) {
             Ok(()) => {
                 stats.tap_to_drv.fetch_add(1, Ordering::Relaxed);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if retry_ring.len() < 8192 {
-                    retry_ring.push_back(combined);
+                    retry_ring.push_back(combined[..2 + n].to_vec());
                 } else {
                     warn!("retry ring full, dropped outgoing frame ({n} bytes)");
                 }
@@ -438,38 +452,34 @@ fn incoming_thread(
     tap_fd: RawFd,
 ) {
     let mut buf = [0u8; RELAY_BUF_MAX];
-    let maxfd = d2b_high_fd.max(d2b_low_fd);
     let mut last_low_attempt = Instant::now();
     let mut have_last_low_attempt = false;
 
     while running.load(Ordering::Relaxed) {
-        use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
+        // poll(2) instead of select(2): no FD_SETSIZE bound, so arbitrary fds.
+        let mut pollfds = [
+            libc::pollfd {
+                fd: d2b_high_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: d2b_low_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
 
-        let mut rfds: fd_set = unsafe { std::mem::zeroed() };
-        unsafe { FD_ZERO(&mut rfds) };
-        unsafe { FD_SET(d2b_high_fd, &mut rfds) };
-        unsafe { FD_SET(d2b_low_fd, &mut rfds) };
+        let ret = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, 200) };
+        let high_ready = pollfds[0].revents & libc::POLLIN != 0;
+        let low_ready = pollfds[1].revents & libc::POLLIN != 0;
 
-        let mut tv = timeval {
-            tv_sec: 0,
-            tv_usec: 200000,
-        };
-
-        let ret = unsafe {
-            select(
-                maxfd + 1,
-                &mut rfds,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut tv,
-            )
-        };
         if ret < 0 {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
-            error!("incoming select error: {err}");
+            error!("incoming poll error: {err}");
             running.store(false, Ordering::SeqCst);
             break;
         }
@@ -485,8 +495,9 @@ fn incoming_thread(
             continue;
         }
 
-        let high_ready = unsafe { FD_ISSET(d2b_high_fd, &rfds) };
-        let _low_ready = unsafe { FD_ISSET(d2b_low_fd, &rfds) };
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
 
         if high_ready {
             while running.load(Ordering::Relaxed) {
@@ -514,7 +525,6 @@ fn incoming_thread(
             break;
         }
 
-        let low_ready = unsafe { FD_ISSET(d2b_low_fd, &rfds) };
         if low_ready
             || (have_last_low_attempt && last_low_attempt.elapsed() >= Duration::from_micros(50000))
         {
@@ -566,7 +576,7 @@ fn process_incoming_frame(
     let frame = EthernetFrame::new(buf[..len].to_vec());
 
     {
-        let mut cache = arp_cache.write().unwrap();
+        let mut cache = arp_cache.write().unwrap_or_else(|e| e.into_inner());
         if len >= 34 && frame.ethertype() == Some(0x0800) {
             let ip = [buf[26], buf[27], buf[28], buf[29]];
             let mac = [buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]];
@@ -580,7 +590,7 @@ fn process_incoming_frame(
     }
 
     {
-        let filters_guard = filters.read().unwrap();
+        let filters_guard = filters.read().unwrap_or_else(|e| e.into_inner());
         if should_drop_frame(&frame, 1, &filters_guard) {
             stats.drop_ip.fetch_add(1, Ordering::Relaxed);
             return Ok(Some(len as u16));
@@ -639,36 +649,28 @@ fn read_exact(fd: RawFd, buf: &mut [u8]) -> Result<(), std::io::Error> {
 }
 
 fn wait_readable(fd: RawFd, timeout: Duration) -> Result<bool, std::io::Error> {
-    use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
-
-    let mut rfds: fd_set = unsafe { std::mem::zeroed() };
-    unsafe { FD_ZERO(&mut rfds) };
-    unsafe { FD_SET(fd, &mut rfds) };
-
-    let mut tv = timeval {
-        tv_sec: timeout.as_secs() as libc::time_t,
-        tv_usec: timeout.subsec_micros() as libc::suseconds_t,
-    };
+    let mut pollfds = [libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    }];
 
     let ret = unsafe {
-        select(
-            fd + 1,
-            &mut rfds,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut tv,
+        libc::poll(
+            pollfds.as_mut_ptr(),
+            pollfds.len() as libc::nfds_t,
+            timeout.as_millis() as libc::c_int,
         )
     };
     if ret < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(unsafe { FD_ISSET(fd, &rfds) })
+    Ok(pollfds[0].revents & libc::POLLIN != 0)
 }
 
 fn flush_retry_ring(fd: RawFd, ring: &mut VecDeque<Vec<u8>>) -> Result<(), std::io::Error> {
-    while !ring.is_empty() {
-        let entry = ring.front().unwrap().clone();
-        match write_exact_nonblock(fd, &entry) {
+    while let Some(entry) = ring.front() {
+        match write_exact_nonblock(fd, entry) {
             Ok(()) => {
                 ring.pop_front();
             }
@@ -884,6 +886,39 @@ fn fix_ip_checksum(frame: &mut [u8]) {
 }
 
 fn load_filter_config() -> Result<FilterConfig, crate::RvpnError> {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<(Option<std::time::SystemTime>, FilterConfig)>> = OnceLock::new();
+
+    let path = std::path::Path::new(FILTER_PATH);
+    let meta = std::fs::metadata(path).ok();
+    let mtime = meta.as_ref().map(|m| m.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH));
+
+    let cache = CACHE.get_or_init(|| Mutex::new((None, FilterConfig::default())));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Only reparse when the file changed (avoids re-reading /tmp every second).
+    if guard.0.as_ref() == mtime.as_ref() {
+        return Ok(guard.1.clone());
+    }
+
+    // /tmp is world-writable; a config from someone else is not ours to honor.
+    if let Some(m) = meta.as_ref() {
+        use std::os::unix::fs::MetadataExt;
+        if m.uid() != unsafe { libc::geteuid() } {
+            warn!("ignoring {FILTER_PATH}: owned by another user");
+            guard.0 = mtime;
+            guard.1 = FilterConfig::default();
+            return Ok(FilterConfig::default());
+        }
+    }
+
+    let cfg = load_filter_config_uncached()?;
+    guard.0 = mtime;
+    guard.1 = cfg.clone();
+    Ok(cfg)
+}
+
+fn load_filter_config_uncached() -> Result<FilterConfig, crate::RvpnError> {
     let path = std::path::Path::new(FILTER_PATH);
     if !path.exists() {
         return Ok(FilterConfig::default());
