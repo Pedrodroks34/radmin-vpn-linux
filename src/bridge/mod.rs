@@ -891,7 +891,9 @@ fn load_filter_config() -> Result<FilterConfig, crate::RvpnError> {
 
     let path = std::path::Path::new(FILTER_PATH);
     let meta = std::fs::metadata(path).ok();
-    let mtime = meta.as_ref().map(|m| m.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH));
+    let mtime = meta
+        .as_ref()
+        .map(|m| m.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH));
 
     let cache = CACHE.get_or_init(|| Mutex::new((None, FilterConfig::default())));
     let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
