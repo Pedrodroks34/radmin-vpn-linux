@@ -147,6 +147,15 @@ impl RadminVpnService {
             }
         }
 
+        // Wait for the graphical session to bring up a display before the
+        // wine session boots: a wineserver started without DISPLAY/WAYLAND
+        // cannot create GUI windows in that session, which would leave the
+        // Radmin GUI dead until the next restart. Cap the wait so headless
+        // machines (no desktop) still come up.
+        if !crate::wine::wait_for_display(std::time::Duration::from_secs(15)) {
+            warn!("no graphical session display detected after 15s; wine session will be headless");
+        }
+
         let tap_guid = self.config.tap_guid.as_deref().unwrap_or(DEFAULT_TAP_GUID);
         self.wine_manager.install_components()?;
         self.wine_manager.configure_registry(tap_guid)?;

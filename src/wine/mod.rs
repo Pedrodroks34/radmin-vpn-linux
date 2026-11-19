@@ -516,10 +516,29 @@ fn parse_environ(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
         .collect()
 }
 
+/// Detect the graphical session environment by scanning same-uid processes'
+/// environ (plasmashell, kwin, Xwayland, ...). No caching: at service start
+/// the graphical session may not be up yet, and a stale "not found" must not
+/// be remembered forever.
 fn detect_session_display_env() -> Option<Vec<(&'static str, std::ffi::OsString)>> {
-    static CACHE: std::sync::OnceLock<Option<Vec<(&'static str, std::ffi::OsString)>>> =
-        std::sync::OnceLock::new();
-    CACHE.get_or_init(compute_session_display_env).clone()
+    compute_session_display_env()
+}
+
+/// Wait until a graphical session environment is detectable, polling every
+/// 500ms up to `timeout`. Returns true if a display was found. Without a
+/// display the Wine session cannot create GUI windows, so the caller should
+/// wait for one on machines that have a desktop.
+pub fn wait_for_display(timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if detect_session_display_env().is_some() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 }
 
 fn compute_session_display_env() -> Option<Vec<(&'static str, std::ffi::OsString)>> {
