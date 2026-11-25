@@ -411,6 +411,12 @@ impl TapInterface {
                 std::io::Error::last_os_error()
             )));
         }
+        if ret as usize != data.len() {
+            return Err(RvpnError::Tap(format!(
+                "short write to TAP: wrote {ret} of {} bytes",
+                data.len()
+            )));
+        }
         Ok(())
     }
 
