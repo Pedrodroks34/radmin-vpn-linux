@@ -418,13 +418,26 @@ fn outgoing_thread(ctx: OutgoingContext) {
         combined[1] = ((len >> 8) & 0xFF) as u8;
         combined[2..2 + n].copy_from_slice(&buf[..n]);
 
-        match write_exact_nonblock(b2d_fd, &combined[..2 + n]) {
-            Ok(()) => {
-                stats.tap_to_drv.fetch_add(1, Ordering::Relaxed);
+        let combined_len = 2 + n;
+        match write_nonblock(b2d_fd, &combined[..combined_len]) {
+            Ok(written) => {
+                if written < combined_len {
+                    // Partially sent: re-queue only the unsent suffix.
+                    if retry_ring.len() < 8192 {
+                        retry_ring.push_back(combined[written..combined_len].to_vec());
+                    } else {
+                        warn!(
+                            "retry ring full, dropped outgoing frame ({} bytes)",
+                            combined_len - written
+                        );
+                    }
+                } else {
+                    stats.tap_to_drv.fetch_add(1, Ordering::Relaxed);
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if retry_ring.len() < 8192 {
-                    retry_ring.push_back(combined[..2 + n].to_vec());
+                    retry_ring.push_back(combined[..combined_len].to_vec());
                 } else {
                     warn!("retry ring full, dropped outgoing frame ({n} bytes)");
                 }
@@ -451,7 +464,10 @@ fn incoming_thread(
     arp_cache: Arc<RwLock<Vec<ArpCacheEntry>>>,
     tap_fd: RawFd,
 ) {
-    let mut buf = [0u8; RELAY_BUF_MAX];
+    // Partial header/payload reads persist across calls, so each priority
+    // queue needs its own state to avoid interleaving frames.
+    let mut high_state = IncomingFrameState::default();
+    let mut low_state = IncomingFrameState::default();
     let mut last_low_attempt = Instant::now();
     let mut have_last_low_attempt = false;
 
@@ -486,7 +502,12 @@ fn incoming_thread(
         if ret == 0 {
             if have_last_low_attempt && last_low_attempt.elapsed() >= Duration::from_micros(50000) {
                 if let Ok(Some(_len)) = process_incoming_frame(
-                    d2b_low_fd, &mut buf, &stats, &filters, &arp_cache, tap_fd,
+                    d2b_low_fd,
+                    &mut low_state,
+                    &stats,
+                    &filters,
+                    &arp_cache,
+                    tap_fd,
                 ) {
                     stats.drv_to_tap_low.fetch_add(1, Ordering::Relaxed);
                 }
@@ -503,7 +524,7 @@ fn incoming_thread(
             while running.load(Ordering::Relaxed) {
                 match process_incoming_frame(
                     d2b_high_fd,
-                    &mut buf,
+                    &mut high_state,
                     &stats,
                     &filters,
                     &arp_cache,
@@ -531,9 +552,14 @@ fn incoming_thread(
             last_low_attempt = Instant::now();
             have_last_low_attempt = true;
 
-            if let Ok(Some(_len)) =
-                process_incoming_frame(d2b_low_fd, &mut buf, &stats, &filters, &arp_cache, tap_fd)
-            {
+            if let Ok(Some(_len)) = process_incoming_frame(
+                d2b_low_fd,
+                &mut low_state,
+                &stats,
+                &filters,
+                &arp_cache,
+                tap_fd,
+            ) {
                 stats.drv_to_tap_low.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -542,23 +568,59 @@ fn incoming_thread(
     running.store(false, Ordering::SeqCst);
 }
 
+/// Persistent read state for one FIFO. The 2-byte length header and the
+/// payload can arrive split across several nonblocking reads, so partial
+/// progress must survive between `process_incoming_frame` calls instead of
+/// being dropped and desynchronizing the frame stream.
+#[derive(Default)]
+struct IncomingFrameState {
+    /// Length header bytes read so far (0–2).
+    header: [u8; 2],
+    header_done: usize,
+    /// Payload bytes read so far (only when the header is complete).
+    payload: Vec<u8>,
+}
+
+impl IncomingFrameState {
+    fn reset(&mut self) {
+        self.header_done = 0;
+        self.header = [0; 2];
+        self.payload.clear();
+    }
+}
+
 fn process_incoming_frame(
     fd: RawFd,
-    buf: &mut [u8],
+    state: &mut IncomingFrameState,
     stats: &Arc<BridgeStats>,
     filters: &Arc<RwLock<FilterConfig>>,
     arp_cache: &Arc<RwLock<Vec<ArpCacheEntry>>>,
     tap_fd: RawFd,
 ) -> Result<Option<u16>, std::io::Error> {
-    let mut len_buf = [0u8; 2];
-    match read_exact(fd, &mut len_buf) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
-        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
-        Err(e) => return Err(e),
+    // Phase 1: read the 2-byte little-endian length header. A nonblocking
+    // read can return fewer bytes than requested; partial progress is kept
+    // in `state.header` and resumes on the next call.
+    while state.header_done < 2 {
+        match read(fd, &mut state.header[state.header_done..]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "EOF",
+                ))
+            }
+            Ok(n) => state.header_done += n,
+            Err(e) => {
+                let e: std::io::Error = e.into();
+                match e.kind() {
+                    std::io::ErrorKind::Interrupted => continue,
+                    std::io::ErrorKind::WouldBlock => return Ok(None),
+                    _ => return Err(e),
+                }
+            }
+        }
     }
 
-    let len = u16::from_le_bytes([len_buf[0], len_buf[1]]) as usize;
+    let len = u16::from_le_bytes([state.header[0], state.header[1]]) as usize;
     if len > ETH_FRAME_MAX {
         error!("corrupt frame len {} > {}", len, ETH_FRAME_MAX);
         return Err(std::io::Error::new(
@@ -567,24 +629,69 @@ fn process_incoming_frame(
         ));
     }
 
-    match read_exact(fd, &mut buf[..len]) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
-        Err(e) => return Err(e),
+    // Phase 2: read the payload, accumulating partial progress in
+    // `state.payload` across calls.
+    if state.payload.len() < len {
+        let mut tmp = [0u8; ETH_FRAME_MAX];
+        while state.payload.len() < len {
+            let want = len - state.payload.len();
+            match read(fd, &mut tmp[..want]) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "EOF",
+                    ))
+                }
+                Ok(n) => state.payload.extend_from_slice(&tmp[..n]),
+                Err(e) => {
+                    let e: std::io::Error = e.into();
+                    match e.kind() {
+                        std::io::ErrorKind::Interrupted => continue,
+                        std::io::ErrorKind::WouldBlock => return Ok(None),
+                        _ => return Err(e),
+                    }
+                }
+            }
+        }
     }
 
-    let frame = EthernetFrame::new(buf[..len].to_vec());
+    let frame = EthernetFrame::new(std::mem::take(&mut state.payload));
+    let len = frame.data.len();
 
     {
         let mut cache = arp_cache.write().unwrap_or_else(|e| e.into_inner());
-        if len >= 34 && frame.ethertype() == Some(0x0800) {
-            let ip = [buf[26], buf[27], buf[28], buf[29]];
-            let mac = [buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]];
+        if frame.data.len() >= 34 && frame.ethertype() == Some(0x0800) {
+            let ip = [
+                frame.data[26],
+                frame.data[27],
+                frame.data[28],
+                frame.data[29],
+            ];
+            let mac = [
+                frame.data[6],
+                frame.data[7],
+                frame.data[8],
+                frame.data[9],
+                frame.data[10],
+                frame.data[11],
+            ];
             arp_cache_update(&mut cache, ip, mac, stats);
         }
-        if len >= 42 && frame.ethertype() == Some(0x0806) {
-            let ip = [buf[28], buf[29], buf[30], buf[31]];
-            let mac = [buf[22], buf[23], buf[24], buf[25], buf[26], buf[27]];
+        if frame.data.len() >= 42 && frame.ethertype() == Some(0x0806) {
+            let ip = [
+                frame.data[28],
+                frame.data[29],
+                frame.data[30],
+                frame.data[31],
+            ];
+            let mac = [
+                frame.data[22],
+                frame.data[23],
+                frame.data[24],
+                frame.data[25],
+                frame.data[26],
+                frame.data[27],
+            ];
             arp_cache_update(&mut cache, ip, mac, stats);
         }
     }
@@ -593,13 +700,15 @@ fn process_incoming_frame(
         let filters_guard = filters.read().unwrap_or_else(|e| e.into_inner());
         if should_drop_frame(&frame, 1, &filters_guard) {
             stats.drop_ip.fetch_add(1, Ordering::Relaxed);
+            state.reset();
             return Ok(Some(len as u16));
         }
     }
 
-    let ret = unsafe { libc::write(tap_fd, buf.as_ptr() as *const libc::c_void, len) };
+    let ret = unsafe { libc::write(tap_fd, frame.data.as_ptr() as *const libc::c_void, len) };
     if ret < 0 {
         let err = std::io::Error::last_os_error();
+        state.reset();
         if err.kind() == std::io::ErrorKind::WouldBlock {
             return Ok(Some(len as u16));
         }
@@ -607,45 +716,27 @@ fn process_incoming_frame(
     }
     if ret as usize != len {
         warn!("short write to TAP");
+        state.reset();
         return Ok(Some(len as u16));
     }
 
     replicate_mcast_to_bcast(tap_fd, &frame, false);
 
+    state.reset();
     Ok(Some(len as u16))
 }
 
-fn write_exact_nonblock(fd: RawFd, data: &[u8]) -> Result<(), std::io::Error> {
+/// Nonblocking write that reports partial progress. Unlike `File::write_all`
+/// it does not discard bytes already sent: retry logic must not re-queue a
+/// frame that was partially transmitted. Returns the number of bytes
+/// actually written (0 when the fd would block).
+fn write_nonblock(fd: RawFd, data: &[u8]) -> Result<usize, std::io::Error> {
     use std::io::Write;
     use std::os::unix::io::FromRawFd;
     let mut fd_file = unsafe { std::fs::File::from_raw_fd(fd) };
-    let result = fd_file.write_all(data);
-
+    let result = fd_file.write(data);
     std::mem::forget(fd_file);
-    result
-}
-
-fn read_exact(fd: RawFd, buf: &mut [u8]) -> Result<(), std::io::Error> {
-    let mut done = 0;
-    while done < buf.len() {
-        match read(fd, &mut buf[done..]) {
-            Ok(0) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "EOF",
-                ))
-            }
-            Ok(n) => done += n,
-            Err(e) => {
-                let io_err: std::io::Error = e.into();
-                if io_err.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(io_err);
-            }
-        }
-    }
-    Ok(())
+    result.map(|n| n.min(data.len()))
 }
 
 fn wait_readable(fd: RawFd, timeout: Duration) -> Result<bool, std::io::Error> {
@@ -669,10 +760,16 @@ fn wait_readable(fd: RawFd, timeout: Duration) -> Result<bool, std::io::Error> {
 }
 
 fn flush_retry_ring(fd: RawFd, ring: &mut VecDeque<Vec<u8>>) -> Result<(), std::io::Error> {
-    while let Some(entry) = ring.front() {
-        match write_exact_nonblock(fd, entry) {
-            Ok(()) => {
-                ring.pop_front();
+    while let Some(entry) = ring.front_mut() {
+        match write_nonblock(fd, entry) {
+            Ok(0) => break,
+            Ok(n) => {
+                if n >= entry.len() {
+                    ring.pop_front();
+                } else {
+                    // Keep the unsent suffix: the first n bytes already went out.
+                    entry.drain(..n);
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(_) => {
@@ -842,23 +939,27 @@ fn replicate_mcast_to_bcast(fd: RawFd, frame: &EthernetFrame, is_fifo: bool) {
             copy[udp_csum_off + 1] = 0;
         }
 
+        // FIFOs may accept partial writes; drain what fits and stop when the
+        // fd would block (this helper has no retry ring).
+        let mut data: &[u8] = &copy;
+        let mut combined = Vec::new();
         if is_fifo {
             let len = copy.len() as u16;
-            let mut combined = Vec::with_capacity(2 + copy.len());
             combined.push((len & 0xFF) as u8);
             combined.push(((len >> 8) & 0xFF) as u8);
             combined.extend_from_slice(&copy);
-            let ret = unsafe {
-                libc::write(fd, combined.as_ptr() as *const libc::c_void, combined.len())
-            };
-            if ret < 0 {
-                break;
+            data = &combined;
+        }
+        let mut sent = 0usize;
+        while sent < data.len() {
+            match write_nonblock(fd, &data[sent..]) {
+                Ok(0) => break,
+                Ok(n) => sent += n,
+                Err(_) => break,
             }
-        } else {
-            let ret = unsafe { libc::write(fd, copy.as_ptr() as *const libc::c_void, copy.len()) };
-            if ret < 0 {
-                break;
-            }
+        }
+        if sent < data.len() {
+            debug!("replicate write truncated at {}/{} bytes", sent, data.len());
         }
 
         debug!(
@@ -1073,18 +1174,48 @@ mod tests {
     }
 
     #[test]
-    fn read_write_exact_roundtrip() {
+    fn write_nonblock_writes_full_when_space() {
         let mut fds = [-1, -1];
         let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
         assert_eq!(rc, 0);
         let (read_fd, write_fd) = (fds[0], fds[1]);
 
         let payload = [0x34, 0x12, 0xaa, 0xbb, 0xcc];
-        write_exact_nonblock(write_fd, &payload).unwrap();
+        assert_eq!(write_nonblock(write_fd, &payload).unwrap(), payload.len());
 
         let mut buf = [0u8; 5];
-        read_exact(read_fd, &mut buf).unwrap();
+        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        assert_eq!(n, 5);
         assert_eq!(buf, payload);
+
+        let _ = unsafe { libc::close(read_fd) };
+        let _ = unsafe { libc::close(write_fd) };
+    }
+
+    #[test]
+    fn write_nonblock_reports_wouldblock() {
+        let mut fds = [-1, -1];
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(rc, 0);
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+
+        let ret = unsafe { libc::fcntl(write_fd, libc::F_SETFL, libc::O_NONBLOCK) };
+        assert_eq!(ret, 0);
+
+        // Fill the pipe; further writes must report WouldBlock, not lose data.
+        let filler = [0xABu8; 4096];
+        loop {
+            match write_nonblock(write_fd, &filler) {
+                Ok(n) if n < filler.len() => break,
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+        assert!(matches!(
+            write_nonblock(write_fd, &filler),
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
+        ));
 
         let _ = unsafe { libc::close(read_fd) };
         let _ = unsafe { libc::close(write_fd) };
@@ -1111,6 +1242,54 @@ mod tests {
         let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         assert_eq!(n, 5);
         assert_eq!(buf, [0x01, 0x02, 0x03, 0x04, 0x05]);
+
+        let _ = unsafe { libc::close(read_fd) };
+        let _ = unsafe { libc::close(write_fd) };
+    }
+
+    #[test]
+    fn flush_retry_ring_keeps_unsent_suffix_after_partial_write() {
+        let mut fds = [-1, -1];
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(rc, 0);
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+
+        let ret = unsafe { libc::fcntl(write_fd, libc::F_SETFL, libc::O_NONBLOCK) };
+        assert_eq!(ret, 0);
+
+        // Fill the pipe so the next write cannot complete.
+        let filler = [0xABu8; 4096];
+        loop {
+            match write_nonblock(write_fd, &filler) {
+                Ok(n) if n < filler.len() => break,
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+
+        let mut ring = VecDeque::new();
+        let frame = vec![0x07, 0x08, 0x09, 0x0A, 0x0B];
+        ring.push_back(frame.clone());
+        flush_retry_ring(write_fd, &mut ring).unwrap();
+        // The pipe is full: the frame must still be tracked (possibly
+        // partially). Its first bytes may have gone out; the rest stays queued.
+        let queued_bytes: usize = ring.iter().map(|v| v.len()).sum();
+        assert!(queued_bytes > 0);
+
+        // Free some space and flush again: everything must drain.
+        let mut scratch = [0u8; 4096];
+        let n = unsafe {
+            libc::read(
+                read_fd,
+                scratch.as_mut_ptr() as *mut libc::c_void,
+                scratch.len(),
+            )
+        };
+        assert!(n > 0);
+
+        flush_retry_ring(write_fd, &mut ring).unwrap();
+        assert!(ring.is_empty());
 
         let _ = unsafe { libc::close(read_fd) };
         let _ = unsafe { libc::close(write_fd) };

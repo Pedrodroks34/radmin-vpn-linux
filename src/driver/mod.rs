@@ -207,9 +207,31 @@ impl UserspaceDriver {
         combined.push(((len >> 8) & 0xFF) as u8);
         combined.extend_from_slice(&frame.data);
 
+        // The d2b FIFO is opened O_NONBLOCK: drain what fits and report
+        // WouldBlock instead of discarding already-sent bytes like
+        // `write_all` does.
         use std::io::Write;
-        f.write_all(&combined)
-            .map_err(|e| RvpnError::Driver(format!("write d2b: {e}")))?;
+        let mut sent = 0usize;
+        while sent < combined.len() {
+            match f.write(&combined[sent..]) {
+                Ok(0) => {
+                    return Err(RvpnError::Driver(format!(
+                        "write d2b: zero-length write after {sent}/{} bytes",
+                        combined.len()
+                    )))
+                }
+                Ok(n) => sent += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Err(RvpnError::Driver(format!(
+                        "write d2b: would block after {sent}/{} bytes",
+                        combined.len()
+                    )))
+                }
+                Err(e) => {
+                    return Err(RvpnError::Driver(format!("write d2b: {e}")));
+                }
+            }
+        }
 
         Ok(())
     }
