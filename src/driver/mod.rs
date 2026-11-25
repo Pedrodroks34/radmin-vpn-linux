@@ -163,7 +163,7 @@ impl UserspaceDriver {
             input,
             output.len() as u32,
             &self.adapter_mac.bytes(),
-            &mut self.setup_mode.into(),
+            &mut self.setup_mode.to_setup_mode(),
         )?;
 
         let encoded = response.encode();
@@ -246,7 +246,7 @@ impl UserspaceDriver {
 }
 
 impl SetupModeState {
-    fn into(self) -> crate::protocol::ioctl::SetupMode {
+    fn to_setup_mode(self) -> crate::protocol::ioctl::SetupMode {
         match self {
             SetupModeState::Legacy => crate::protocol::ioctl::SetupMode::Legacy,
             SetupModeState::Tlv => crate::protocol::ioctl::SetupMode::TlvMode,

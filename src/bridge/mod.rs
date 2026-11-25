@@ -148,7 +148,7 @@ impl Bridge {
         unsafe {
             let addr_ptr = &ifr.ifr_ifru as *const _ as *const libc::sockaddr_in;
             let sin_addr = (*addr_ptr).sin_addr;
-            Some(u32::from_le(sin_addr.s_addr).to_ne_bytes())
+            Some(sin_addr.s_addr.to_ne_bytes())
         }
     }
 

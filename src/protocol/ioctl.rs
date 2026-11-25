@@ -53,7 +53,7 @@ impl RvpnIoctl {
             RvpnIoctl::Setup => "IOCTL_RVPN_SETUP",
             RvpnIoctl::PeerMac => "IOCTL_RVPN_PEERMAC",
             RvpnIoctl::SetMac => "IOCTL_RVPN_SETMAC",
-            RvpnIoctl::Unknown(c) => format!("IOCTL_UNKNOWN(0x{c:08x})").leak(),
+            RvpnIoctl::Unknown(_) => "IOCTL_UNKNOWN",
         }
     }
 }

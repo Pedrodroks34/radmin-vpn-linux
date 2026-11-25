@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 fn default_data_dir() -> PathBuf {
-    std::env::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp"))
         .join(".local/share/radmin-vpn-linux")
 }
 

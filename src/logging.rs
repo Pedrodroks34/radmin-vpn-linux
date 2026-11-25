@@ -41,14 +41,17 @@ pub fn notify_systemd(ready: bool, stopping: bool) {
         return;
     }
 
-    let _ = UnixDatagram::unbound()
-        .and_then(|sock| sock.send_to(msg.as_bytes(), std::env::var("NOTIFY_SOCKET").unwrap()));
+    let _ = UnixDatagram::unbound().and_then(|sock| {
+        let socket = std::env::var("NOTIFY_SOCKET").map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "NOTIFY_SOCKET not set")
+        })?;
+        sock.send_to(msg.as_bytes(), socket)
+    });
 }
 
 pub fn watchdog_ping() {
-    if std::env::var("WATCHDOG_PID").is_ok() || std::env::var("NOTIFY_SOCKET").is_ok() {
-        let _ = UnixDatagram::unbound()
-            .and_then(|sock| sock.send_to(b"WATCHDOG=1", std::env::var("NOTIFY_SOCKET").unwrap()));
+    if let Ok(socket) = std::env::var("NOTIFY_SOCKET") {
+        let _ = UnixDatagram::unbound().and_then(|sock| sock.send_to(b"WATCHDOG=1", socket));
     }
 }
 

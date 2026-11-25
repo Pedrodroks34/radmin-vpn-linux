@@ -533,7 +533,7 @@ impl WineProcessManager {
 }
 
 fn dirs_next_home() -> Option<PathBuf> {
-    std::env::home_dir()
+    std::env::var("HOME").map(PathBuf::from).ok()
 }
 
 fn parse_environ(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {

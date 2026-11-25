@@ -263,10 +263,6 @@ fn frame_len_min(padded_len: usize) -> usize {
     padded_len
 }
 
-pub const STATUS_MEDIA_CONNECTED: u32 = 1;
-
-pub const CONNECT_MEDIA_CONNECTED: u8 = 0x20;
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct FilterConfig {
     pub block_ips_enabled: bool,

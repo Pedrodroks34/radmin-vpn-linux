@@ -847,7 +847,7 @@ static NTSTATUS NTAPI DispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Ir
             drv_log("IOCTL STATUS poll");
     } else {
         drv_log_ioctl(ioctl, inLen, outLen,
-                      (const UCHAR *)sysBuffer, inLen < outLen ? outLen : inLen);
+                      (const UCHAR *)sysBuffer, inLen);
     }
 
     switch (ioctl) {
