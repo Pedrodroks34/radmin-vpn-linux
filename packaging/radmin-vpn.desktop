@@ -1,0 +1,14 @@
+[Desktop Entry]
+Comment=
+Exec=/usr/lib/radmin-vpn/radmin-gui
+Icon=radmin-vpn
+Name=Radmin VPN
+NoDisplay=false
+PrefersNonDefaultGPU=false
+StartupNotify=true
+StartupWMClass=RvRvpnGui
+Terminal=false
+Type=Application
+Categories=Network
+X-KDE-SubstituteUID=false
+X-KDE-Username=

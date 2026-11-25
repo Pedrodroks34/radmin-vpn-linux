@@ -6,6 +6,11 @@ SRC_ROOT="${STAGE_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
 
 install -Dm755 "$SRC_ROOT/target/release/radmin-vpn" "$DEST/usr/bin/radmin-vpn"
 
+install -Dm755 "$SRC_ROOT/packaging/radmin-gui" "$DEST/usr/lib/radmin-vpn/radmin-gui"
+install -Dm0644 "$SRC_ROOT/packaging/radmin-vpn.desktop" "$DEST/usr/share/applications/radmin-vpn.desktop"
+install -Dm0644 "$SRC_ROOT/packaging/radmin-vpn.svg" \
+  "$DEST/usr/share/icons/hicolor/scalable/apps/radmin-vpn.svg"
+
 install -Dm0644 "$SRC_ROOT/packaging/systemd/radmin-vpn.service" \
   "$DEST/usr/lib/systemd/user/radmin-vpn.service"
 

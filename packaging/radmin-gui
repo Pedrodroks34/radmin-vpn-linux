@@ -1,0 +1,6 @@
+#!/bin/sh
+# radmin-vpn GUI launcher — used by the packaged radmin-vpn.desktop.
+# Resolves the Wine prefix at runtime so the file works for any user
+# without hardcoding a home directory.
+prefix="${RADMIN_VPN_WINEPREFIX:-${WINEPREFIX:-$HOME/.local/share/radmin-vpn-linux/wineprefix}}"
+exec wine "$prefix/drive_c/Program Files (x86)/Radmin VPN/RvRvpnGui.exe"
