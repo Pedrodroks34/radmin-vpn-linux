@@ -173,7 +173,9 @@ cp -a %{stagedir}/. %{buildroot}/
 /usr/lib/radmin-vpn
 /usr/lib/systemd/user/radmin-vpn.service
 /usr/share/applications/radmin-vpn.desktop
-/usr/share/icons/hicolor/scalable/apps/radmin-vpn.svg
+/usr/share/icons/hicolor/16x16/apps/radmin-vpn.png
+/usr/share/icons/hicolor/32x32/apps/radmin-vpn.png
+/usr/share/icons/hicolor/48x48/apps/radmin-vpn.png
 /usr/share/doc/radmin-vpn-linux
 
 %post
