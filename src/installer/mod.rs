@@ -40,9 +40,10 @@ impl InstallerManager {
 
         let url = self.installer_url();
         info_log(&format!("Downloading Radmin installer from {url}"));
+        let installer_path_str = installer_path.to_string_lossy().into_owned();
 
         let status = std::process::Command::new("curl")
-            .args(["-fL", "-o", installer_path.to_str().unwrap(), &url])
+            .args(["-fL", "-o", installer_path_str.as_str(), &url])
             .status();
 
         match status {
@@ -54,7 +55,7 @@ impl InstallerManager {
             }
             Err(_) => {
                 let status = std::process::Command::new("wget")
-                    .args(["-q", "-O", installer_path.to_str().unwrap(), &url])
+                    .args(["-q", "-O", installer_path_str.as_str(), &url])
                     .status();
                 match status {
                     Ok(s) if s.success() => {}
@@ -113,6 +114,8 @@ impl InstallerManager {
 }
 
 fn compute_sha256(path: &std::path::Path) -> Result<String, RvpnError> {
+    let path_str = path.to_string_lossy().into_owned();
+
     let output = std::process::Command::new("sha256sum")
         .arg(path)
         .output()
@@ -120,9 +123,12 @@ fn compute_sha256(path: &std::path::Path) -> Result<String, RvpnError> {
 
     if !output.status.success() {
         let output = std::process::Command::new("shasum")
-            .args(["-a", "256", path.to_str().unwrap()])
+            .args(["-a", "256", path_str.as_str()])
             .output()
             .map_err(|e| RvpnError::Config(format!("shasum failed: {e}")))?;
+        if !output.status.success() {
+            return Ok(String::new());
+        }
         let output_str = String::from_utf8_lossy(&output.stdout);
         return Ok(output_str
             .split_whitespace()

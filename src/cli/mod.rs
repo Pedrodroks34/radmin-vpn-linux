@@ -401,22 +401,18 @@ fn cmd_tap_bridge(tap_dev: String) -> Result<(), RvpnError> {
     Ok(())
 }
 
-fn cmd_netsh_relay(cmd_file: String, tap_dev: String, poll_interval: f64) -> Result<(), RvpnError> {
-    info!("Starting netsh relay: {cmd_file} -> {tap_dev} (poll={poll_interval}s)");
+fn cmd_netsh_relay(
+    _cmd_file: String,
+    tap_dev: String,
+    poll_interval: f64,
+) -> Result<(), RvpnError> {
+    info!("Starting netsh relay: {tap_dev} (poll={poll_interval}s)");
 
-    loop {
-        if std::path::Path::new(&cmd_file).exists() {
-            let _ = std::fs::remove_file(&cmd_file);
-            info!("Processed netsh command file");
-        }
-
-        let sleep_ms = (poll_interval * 1000.0) as u64;
-        std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
-
-        if SHUTDOWN.load(Ordering::SeqCst) {
-            break;
-        }
+    let relay = crate::netsh_relay::spawn(&tap_dev);
+    while !SHUTDOWN.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
+    relay.stop();
 
     Ok(())
 }
