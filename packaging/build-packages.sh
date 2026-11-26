@@ -44,6 +44,7 @@ if [ "$PREFIX" = "/usr" ] && [ "$(id -u)" -ne 0 ]; then
 fi
 
 install -Dm755 usr/bin/radmin-vpn "$PREFIX/bin/radmin-vpn"
+install -Dm755 usr/bin/radmin-gui "$PREFIX/bin/radmin-gui"
 if command -v setcap >/dev/null 2>&1; then
   setcap 'cap_net_admin,cap_net_raw+ep' "$PREFIX/bin/radmin-vpn"
 else
@@ -170,6 +171,7 @@ cp -a %{stagedir}/. %{buildroot}/
 
 %files
 /usr/bin/radmin-vpn
+/usr/bin/radmin-gui
 /usr/lib/radmin-vpn
 /usr/lib/systemd/user/radmin-vpn.service
 /usr/share/applications/radmin-vpn.desktop

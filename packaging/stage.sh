@@ -6,7 +6,7 @@ SRC_ROOT="${STAGE_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}"
 
 install -Dm755 "$SRC_ROOT/target/release/radmin-vpn" "$DEST/usr/bin/radmin-vpn"
 
-install -Dm755 "$SRC_ROOT/packaging/radmin-gui" "$DEST/usr/lib/radmin-vpn/radmin-gui"
+install -Dm755 "$SRC_ROOT/packaging/radmin-gui" "$DEST/usr/bin/radmin-gui"
 install -Dm0644 "$SRC_ROOT/packaging/radmin-vpn.desktop" "$DEST/usr/share/applications/radmin-vpn.desktop"
 for sz in 16 32 48; do
   install -Dm0644 "$SRC_ROOT/packaging/icons/hicolor/${sz}x${sz}/apps/radmin-vpn.png" \

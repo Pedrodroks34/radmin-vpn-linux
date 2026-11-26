@@ -1,6 +1,6 @@
 [Desktop Entry]
 Comment=
-Exec=/usr/lib/radmin-vpn/radmin-gui
+Exec=/usr/bin/radmin-gui
 Icon=radmin-vpn
 Name=Radmin VPN
 NoDisplay=false

@@ -98,6 +98,7 @@ install: target/release/radmin-vpn $(WINBINS)
 	install -d -m 0755 "$(DESTDIR)$(BINDIR)"
 	install -d -m 0755 "$(DESTDIR)$(LIBDIR)"
 	install -Dm0755 target/release/radmin-vpn "$(DESTDIR)$(BINDIR)/radmin-vpn"
+	install -Dm0755 packaging/radmin-gui "$(DESTDIR)$(BINDIR)/radmin-gui"
 	if [ -z "$(DESTDIR)" ]; then \
 		setcap 'cap_net_admin,cap_net_raw+ep' "$(BINDIR)/radmin-vpn"; \
 	else \
